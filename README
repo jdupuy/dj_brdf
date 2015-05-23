@@ -1,1 +1,6 @@
-TODO.
+This repository contains the source code used to produce the results 
+of the EGSR 2015 paper "Extracting Microfacet-based BRDF Parameters from 
+Arbitrary Materials with Power Iterations", which is available on my 
+webpage (see my GitHub profile). For information on how to use 
+the library, see the dj_brdf.h file. For users familiar with the Mitsuba
+renderer, looking at the plugins in the mitsuba/ folder shoud also be useful.
