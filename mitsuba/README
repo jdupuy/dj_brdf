@@ -12,6 +12,6 @@ build script, e.g., add the following lines to the SconsScript file
 	plugins += env.SharedLibrary('merl_tabulated', ['merl_tabulated.cpp'])
 	plugins += env.SharedLibrary('utia_accelerated', ['utia.cpp'])
 	plugins += env.SharedLibrary('utia_tabulated', ['utia_tabulated.cpp'])
-You may now recompile Mistuab and start using the plugins.
+You may now recompile Mistuba and start using the plugins.
 
 
