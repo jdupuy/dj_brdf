@@ -13,9 +13,9 @@
 MTS_NAMESPACE_BEGIN
 
 
-class MerlBRDF : public BSDF {
+class UTIA : public BSDF {
 public:
-	MerlBRDF(const Properties &props)
+	UTIA(const Properties &props)
 		: BSDF(props) {
 
 		m_reflectance = new ConstantSpectrumTexture(props.getSpectrum(
@@ -26,13 +26,13 @@ public:
 		m_brdf = new djb::utia(m_filename.string().c_str());
 	}
 
-	MerlBRDF(Stream *stream, InstanceManager *manager)
+	UTIA(Stream *stream, InstanceManager *manager)
 		: BSDF(stream, manager) {
 
 		configure();
 	}
 
-	~MerlBRDF()
+	~UTIA()
 	{
 		delete m_brdf;
 	}
@@ -120,7 +120,7 @@ public:
 
 	std::string toString() const {
 		std::ostringstream oss;
-		oss << "MerlBRDF[" << endl
+		oss << "UTIA[" << endl
 			<< "  id = \"" << getID() << "\"," << endl
 			<< "]";
 		return oss.str();
@@ -136,9 +136,9 @@ private:
 
 // ================ Hardware shader implementation ================
 
-class MerlBRDFShader : public Shader {
+class UTIAShader : public Shader {
 public:
-	MerlBRDFShader(Renderer *renderer, const Texture *reflectance)
+	UTIAShader(Renderer *renderer, const Texture *reflectance)
 		: Shader(renderer, EBSDFShader), m_reflectance(reflectance) {
 		m_reflectanceShader = renderer->registerShaderForResource(m_reflectance.get());
 	}
@@ -175,11 +175,11 @@ private:
 	ref<Shader> m_reflectanceShader;
 };
 
-Shader *MerlBRDF::createShader(Renderer *renderer) const {
-	return new MerlBRDFShader(renderer, m_reflectance.get());
+Shader *UTIA::createShader(Renderer *renderer) const {
+	return new UTIAShader(renderer, m_reflectance.get());
 }
 
-MTS_IMPLEMENT_CLASS(MerlBRDFShader, false, Shader)
-MTS_IMPLEMENT_CLASS_S(MerlBRDF, false, BSDF)
-MTS_EXPORT_PLUGIN(MerlBRDF, "MERL BRDF")
+MTS_IMPLEMENT_CLASS(UTIAShader, false, Shader)
+MTS_IMPLEMENT_CLASS_S(UTIA, false, BSDF)
+MTS_EXPORT_PLUGIN(UTIA, "MERL BRDF")
 MTS_NAMESPACE_END

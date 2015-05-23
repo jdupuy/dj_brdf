@@ -15,9 +15,9 @@
 MTS_NAMESPACE_BEGIN
 
 
-class MerlBRDF : public BSDF {
+class MERL : public BSDF {
 public:
-	MerlBRDF(const Properties &props)
+	MERL(const Properties &props)
 		: BSDF(props) {
 
 		m_reflectance = new ConstantSpectrumTexture(props.getSpectrum(
@@ -29,41 +29,19 @@ public:
 		// load MERL
 		m_brdf = new djb::merl(m_filename.string().c_str());
 		// load tabulated
-		djb::tabular fit(djb::microfacet::GAF_SMITH, *m_brdf, 89, true);
-		// load GMM
-		m_gmm = new djb::gmm(fit, 8, 100);
-
-		m_Ndistr = m_gmm->get_weights().size();
-		m_weight = new float[m_Ndistr];
-		m_roughness = new float[m_Ndistr];
-		m_distr = new MicrofacetDistribution*[m_Ndistr];
-		
-		for(int i=0 ; i<m_Ndistr ; ++i)
-		{
-			m_weight[i] = m_gmm->get_weights()[i];
-			double s1, s2, t;
-			m_gmm->get_lobes()[i]->get_roughness(&s1, &s2, &t);
-			m_roughness[i] = (Float)s1 * sqrtf(2.0);
-			m_distr[i] = new MicrofacetDistribution(MicrofacetDistribution::EBeckmann, m_roughness[i], m_roughness[i], false);
-		}
-
+		m_tabular = new djb::tabular(djb::microfacet::GAF_SMITH, *m_brdf, 90, true);
 	}
 
-	MerlBRDF(Stream *stream, InstanceManager *manager)
+	MERL(Stream *stream, InstanceManager *manager)
 		: BSDF(stream, manager) {
 
 		configure();
 	}
 
-	~MerlBRDF()
+	~MERL()
 	{
 		delete m_brdf;
-		delete [] m_weight;
-		delete [] m_roughness;
-		for(int i=0 ; i<m_Ndistr ; ++i)
-			delete m_distr[i];
-		delete [] m_distr;
-		delete m_gmm;
+		delete m_tabular;
 	}
 
 	void configure() {
@@ -76,55 +54,11 @@ public:
 
 
 
-
-
-	Float D(const Vector& wm) const 
-	{
-		Float D_ = 0;
-		for(int i=0 ; i<m_Ndistr ; ++i)
-		{
-			D_ += m_weight[i] * m_distr[i]->eval(wm);
-		}
-		return D_;
-	}
-
 	Float PDF(const Vector& wm) const 
 	{
-		return D(wm) * Frame::cosTheta(wm);
+		djb::dir m(djb::vec3(wm.x, wm.y, wm.z));
+		return m_tabular->ndf(m) * Frame::cosTheta(wm);
 	}
-
-	Float Lambda(const Vector& wi, const Vector &wm) const
-	{
-		Float Lambda_ = 0;
-		for(int i=0 ; i<m_Ndistr ; ++i)
-		{
-			Lambda_ += m_weight[i] * (1.0f/m_distr[i]->smithG1(wi, wm) - 1.0f);
-		}
-		return Lambda_;
-	}
-
-	Float G1(const Vector& wi, const Vector &wm) const
-	{
-		if ( dot(wi, wm) * Frame::cosTheta(wi) <= 0 )
-			return 0.0f;
-
-		Float Lambdai = Lambda(wi, wm);
-		Float G1_ = 1.0f / (1.0f + Lambdai);
-		return G1_;
-	}
-
-	Float G2(const Vector& wi, const Vector& wo, const Vector &wm) const
-	{
-		if ( dot(wi, wm) * Frame::cosTheta(wi) <= 0 || dot(wo, wm) * Frame::cosTheta(wo) <= 0 )
-			return 0.0f;
-
-		Float Lambdai = Lambda(wi, wm);
-		Float Lambdao = Lambda(wo, wm);
-		Float G2_ = 1.0f / (1.0f + Lambdai + Lambdao);
-		return G2_;
-	}
-
-
 
 	Spectrum eval(const BSDFSamplingRecord &bRec, EMeasure measure) const {
 		if (!(bRec.typeMask & EDiffuseReflection) || measure != ESolidAngle
@@ -157,18 +91,11 @@ public:
 			return Spectrum(0.0f);
 
 		/* Sample M, the microfacet normal */
-		Float pdf_;
+		djb::vec3 wm = djb::vec3(m_tabular->sample(djb::dir(djb::vec3(bRec.wi.x, bRec.wi.y, bRec.wi.z)), sample.x, sample.y));
+		
+		Normal m(wm.x, wm.y, wm.z);
 
-		int i=0;
-		float sum = m_weight[0];
-		float U = (rand()%RAND_MAX) / (Float)RAND_MAX;
-		while(sum < U)
-		{
-			i++;
-			sum += m_weight[i];
-		}
-
-		Normal m = m_distr[i]->sample(bRec.wi, sample, pdf_);
+		Float pdf_ = PDF(m);
 
 		if (pdf_ == 0)
 			return Spectrum(0.0f);
@@ -223,7 +150,7 @@ public:
 
 	std::string toString() const {
 		std::ostringstream oss;
-		oss << "MerlBRDF[" << endl
+		oss << "MERL[" << endl
 			<< "  id = \"" << getID() << "\"," << endl
 			<< "]";
 		return oss.str();
@@ -235,20 +162,14 @@ public:
 private:
 	ref<const Texture> m_reflectance;
 	djb::merl * m_brdf;
-
-	djb::gmm * m_gmm;
-
-	MicrofacetDistribution ** m_distr;
-	Float * m_weight;
-	Float * m_roughness;
-	int m_Ndistr;
+	djb::tabular * m_tabular;
 };
 
 // ================ Hardware shader implementation ================
 
-class MerlBRDFShader : public Shader {
+class MERLShader : public Shader {
 public:
-	MerlBRDFShader(Renderer *renderer, const Texture *reflectance)
+	MERLShader(Renderer *renderer, const Texture *reflectance)
 		: Shader(renderer, EBSDFShader), m_reflectance(reflectance) {
 		m_reflectanceShader = renderer->registerShaderForResource(m_reflectance.get());
 	}
@@ -285,11 +206,11 @@ private:
 	ref<Shader> m_reflectanceShader;
 };
 
-Shader *MerlBRDF::createShader(Renderer *renderer) const {
-	return new MerlBRDFShader(renderer, m_reflectance.get());
+Shader *MERL::createShader(Renderer *renderer) const {
+	return new MERLShader(renderer, m_reflectance.get());
 }
 
-MTS_IMPLEMENT_CLASS(MerlBRDFShader, false, Shader)
-MTS_IMPLEMENT_CLASS_S(MerlBRDF, false, BSDF)
-MTS_EXPORT_PLUGIN(MerlBRDF, "MERL BRDF")
+MTS_IMPLEMENT_CLASS(MERLShader, false, Shader)
+MTS_IMPLEMENT_CLASS_S(MERL, false, BSDF)
+MTS_EXPORT_PLUGIN(MERL, "MERL BRDF")
 MTS_NAMESPACE_END

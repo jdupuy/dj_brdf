@@ -16,9 +16,9 @@ MTS_NAMESPACE_BEGIN
 
 
 
-class GMMBRDF : public BSDF {
+class ABC : public BSDF {
 public:
-	GMMBRDF(const Properties &props)
+	ABC(const Properties &props)
 		: BSDF(props) {
 
 		m_reflectance = new ConstantSpectrumTexture(props.getSpectrum(
@@ -36,13 +36,13 @@ public:
 		m_tabular = new djb::tabular(djb::microfacet::GAF_SMITH, merl, 90, true);
 	}
 
-	GMMBRDF(Stream *stream, InstanceManager *manager)
+	ABC(Stream *stream, InstanceManager *manager)
 		: BSDF(stream, manager) {
 
 		configure();
 	}
 
-	~GMMBRDF()
+	~ABC()
 	{
 		delete m_tabular;
 	}
@@ -62,8 +62,6 @@ public:
 			return Spectrum(0.0f);
 
 		/* Calculate the reflection half-vector */
-		Vector H = normalize(bRec.wo+bRec.wi);
-
 		djb::dir wi(djb::vec3(bRec.wi.x, bRec.wi.y, bRec.wi.z));
 		djb::dir wo(djb::vec3(bRec.wo.x, bRec.wo.y, bRec.wo.z));
 		djb::vec3 value = m_abc->evalp(wo, wi);
@@ -139,7 +137,7 @@ public:
 
 	std::string toString() const {
 		std::ostringstream oss;
-		oss << "GMMBRDF[" << endl
+		oss << "ABC[" << endl
 			<< "  id = \"" << getID() << "\"," << endl
 			<< "]";
 		return oss.str();
@@ -156,9 +154,9 @@ private:
 
 // ================ Hardware shader implementation ================
 
-class GMMBRDFShader : public Shader {
+class ABCShader : public Shader {
 public:
-	GMMBRDFShader(Renderer *renderer, const Texture *reflectance)
+	ABCShader(Renderer *renderer, const Texture *reflectance)
 		: Shader(renderer, EBSDFShader), m_reflectance(reflectance) {
 		m_reflectanceShader = renderer->registerShaderForResource(m_reflectance.get());
 	}
@@ -195,11 +193,11 @@ private:
 	ref<Shader> m_reflectanceShader;
 };
 
-Shader *GMMBRDF::createShader(Renderer *renderer) const {
-	return new GMMBRDFShader(renderer, m_reflectance.get());
+Shader *ABC::createShader(Renderer *renderer) const {
+	return new ABCShader(renderer, m_reflectance.get());
 }
 
-MTS_IMPLEMENT_CLASS(GMMBRDFShader, false, Shader)
-MTS_IMPLEMENT_CLASS_S(GMMBRDF, false, BSDF)
-MTS_EXPORT_PLUGIN(GMMBRDF, "MERL BRDF")
+MTS_IMPLEMENT_CLASS(ABCShader, false, Shader)
+MTS_IMPLEMENT_CLASS_S(ABC, false, BSDF)
+MTS_EXPORT_PLUGIN(ABC, "MERL BRDF")
 MTS_NAMESPACE_END

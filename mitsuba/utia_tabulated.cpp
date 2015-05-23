@@ -14,9 +14,9 @@ MTS_NAMESPACE_BEGIN
 
 
 
-class GMMBRDF : public BSDF {
+class MicrofacetTabulatedAnisotropic : public BSDF {
 public:
-	GMMBRDF(const Properties &props)
+	MicrofacetTabulatedAnisotropic(const Properties &props)
 		: BSDF(props) {
 
 		m_reflectance = new ConstantSpectrumTexture(props.getSpectrum(
@@ -36,13 +36,13 @@ public:
 		m_tabular_anisotropic->set_roughness(alphaU, alphaV);
 	}
 
-	GMMBRDF(Stream *stream, InstanceManager *manager)
+	MicrofacetTabulatedAnisotropic(Stream *stream, InstanceManager *manager)
 		: BSDF(stream, manager) {
 
 		configure();
 	}
 
-	~GMMBRDF()
+	~MicrofacetTabulatedAnisotropic()
 	{
 		delete m_tabular_anisotropic;
 	}
@@ -61,9 +61,6 @@ public:
 			|| Frame::cosTheta(bRec.wi) <= 0
 			|| Frame::cosTheta(bRec.wo) <= 0)
 			return Spectrum(0.0f);
-
-		/* Calculate the reflection half-vector */
-		Vector H = normalize(bRec.wo+bRec.wi);
 
 		djb::dir wi(djb::vec3(bRec.wi.x, bRec.wi.y, bRec.wi.z));
 		djb::dir wo(djb::vec3(bRec.wo.x, bRec.wo.y, bRec.wo.z));
@@ -124,7 +121,7 @@ public:
 
 	std::string toString() const {
 		std::ostringstream oss;
-		oss << "GMMBRDF[" << endl
+		oss << "MicrofacetTabulatedAnisotropic[" << endl
 			<< "  id = \"" << getID() << "\"," << endl
 			<< "]";
 		return oss.str();
@@ -141,9 +138,9 @@ private:
 
 // ================ Hardware shader implementation ================
 
-class GMMBRDFShader : public Shader {
+class MicrofacetTabulatedAnisotropicShader : public Shader {
 public:
-	GMMBRDFShader(Renderer *renderer, const Texture *reflectance)
+	MicrofacetTabulatedAnisotropicShader(Renderer *renderer, const Texture *reflectance)
 		: Shader(renderer, EBSDFShader), m_reflectance(reflectance) {
 		m_reflectanceShader = renderer->registerShaderForResource(m_reflectance.get());
 	}
@@ -180,11 +177,11 @@ private:
 	ref<Shader> m_reflectanceShader;
 };
 
-Shader *GMMBRDF::createShader(Renderer *renderer) const {
-	return new GMMBRDFShader(renderer, m_reflectance.get());
+Shader *MicrofacetTabulatedAnisotropic::createShader(Renderer *renderer) const {
+	return new MicrofacetTabulatedAnisotropicShader(renderer, m_reflectance.get());
 }
 
-MTS_IMPLEMENT_CLASS(GMMBRDFShader, false, Shader)
-MTS_IMPLEMENT_CLASS_S(GMMBRDF, false, BSDF)
-MTS_EXPORT_PLUGIN(GMMBRDF, "MERL BRDF")
+MTS_IMPLEMENT_CLASS(MicrofacetTabulatedAnisotropicShader, false, Shader)
+MTS_IMPLEMENT_CLASS_S(MicrofacetTabulatedAnisotropic, false, BSDF)
+MTS_EXPORT_PLUGIN(MicrofacetTabulatedAnisotropic, "MERL BRDF")
 MTS_NAMESPACE_END

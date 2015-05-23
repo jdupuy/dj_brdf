@@ -14,9 +14,9 @@ MTS_NAMESPACE_BEGIN
 
 
 
-class GMMBRDF : public BSDF {
+class MicrofacetGGX : public BSDF {
 public:
-	GMMBRDF(const Properties &props)
+	MicrofacetGGX(const Properties &props)
 		: BSDF(props) {
 
 		m_reflectance = new ConstantSpectrumTexture(props.getSpectrum(
@@ -41,13 +41,13 @@ public:
 		m_ggx->get_roughness(&reference_fitted_alphaU, &reference_fitted_alphaV, NULL);
 	}
 
-	GMMBRDF(Stream *stream, InstanceManager *manager)
+	MicrofacetGGX(Stream *stream, InstanceManager *manager)
 		: BSDF(stream, manager) {
 
 		configure();
 	}
 
-	~GMMBRDF()
+	~MicrofacetGGX()
 	{
 		delete m_ggx;
 	}
@@ -82,9 +82,6 @@ public:
 		Float alphaU = m_alphaU->eval(bRec.its).average();
 		Float alphaV = m_alphaV->eval(bRec.its).average();
 		m_ggx->set_roughness(alphaU*reference_fitted_alphaU, alphaV*reference_fitted_alphaV);
-
-		/* Calculate the reflection half-vector */
-		Vector H = normalize(bRec.wo+bRec.wi);
 
 		djb::dir wi(djb::vec3(bRec.wi.x, bRec.wi.y, bRec.wi.z));
 		djb::dir wo(djb::vec3(bRec.wo.x, bRec.wo.y, bRec.wo.z));
@@ -197,7 +194,7 @@ public:
 
 	std::string toString() const {
 		std::ostringstream oss;
-		oss << "GMMBRDF[" << endl
+		oss << "MicrofacetGGX[" << endl
 			<< "  id = \"" << getID() << "\"," << endl
 			<< "]";
 		return oss.str();
@@ -215,9 +212,9 @@ private:
 
 // ================ Hardware shader implementation ================
 
-class GMMBRDFShader : public Shader {
+class MicrofacetGGXShader : public Shader {
 public:
-	GMMBRDFShader(Renderer *renderer, const Texture *reflectance)
+	MicrofacetGGXShader(Renderer *renderer, const Texture *reflectance)
 		: Shader(renderer, EBSDFShader), m_reflectance(reflectance) {
 		m_reflectanceShader = renderer->registerShaderForResource(m_reflectance.get());
 	}
@@ -254,11 +251,11 @@ private:
 	ref<Shader> m_reflectanceShader;
 };
 
-Shader *GMMBRDF::createShader(Renderer *renderer) const {
-	return new GMMBRDFShader(renderer, m_reflectance.get());
+Shader *MicrofacetGGX::createShader(Renderer *renderer) const {
+	return new MicrofacetGGXShader(renderer, m_reflectance.get());
 }
 
-MTS_IMPLEMENT_CLASS(GMMBRDFShader, false, Shader)
-MTS_IMPLEMENT_CLASS_S(GMMBRDF, false, BSDF)
-MTS_EXPORT_PLUGIN(GMMBRDF, "MERL BRDF")
+MTS_IMPLEMENT_CLASS(MicrofacetGGXShader, false, Shader)
+MTS_IMPLEMENT_CLASS_S(MicrofacetGGX, false, BSDF)
+MTS_EXPORT_PLUGIN(MicrofacetGGX, "MERL BRDF")
 MTS_NAMESPACE_END

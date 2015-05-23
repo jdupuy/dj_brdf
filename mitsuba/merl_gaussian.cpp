@@ -14,9 +14,9 @@ MTS_NAMESPACE_BEGIN
 
 
 
-class GMMBRDF : public BSDF {
+class MicrofacetGaussian : public BSDF {
 public:
-	GMMBRDF(const Properties &props)
+	MicrofacetGaussian(const Properties &props)
 		: BSDF(props) {
 
 		m_reflectance = new ConstantSpectrumTexture(props.getSpectrum(
@@ -41,13 +41,13 @@ public:
 		m_gaussian->get_roughness(&reference_fitted_alphaU, &reference_fitted_alphaV, NULL);
 	}
 
-	GMMBRDF(Stream *stream, InstanceManager *manager)
+	MicrofacetGaussian(Stream *stream, InstanceManager *manager)
 		: BSDF(stream, manager) {
 
 		configure();
 	}
 
-	~GMMBRDF()
+	~MicrofacetGaussian()
 	{
 		delete m_gaussian;
 	}
@@ -82,9 +82,6 @@ public:
 		Float alphaU = m_alphaU->eval(bRec.its).average();
 		Float alphaV = m_alphaV->eval(bRec.its).average();
 		m_gaussian->set_roughness(alphaU*reference_fitted_alphaU, alphaV*reference_fitted_alphaV);
-
-		/* Calculate the reflection half-vector */
-		Vector H = normalize(bRec.wo+bRec.wi);
 
 		djb::dir wi(djb::vec3(bRec.wi.x, bRec.wi.y, bRec.wi.z));
 		djb::dir wo(djb::vec3(bRec.wo.x, bRec.wo.y, bRec.wo.z));
@@ -197,7 +194,7 @@ public:
 
 	std::string toString() const {
 		std::ostringstream oss;
-		oss << "GMMBRDF[" << endl
+		oss << "MicrofacetGaussian[" << endl
 			<< "  id = \"" << getID() << "\"," << endl
 			<< "]";
 		return oss.str();
@@ -215,9 +212,9 @@ private:
 
 // ================ Hardware shader implementation ================
 
-class GMMBRDFShader : public Shader {
+class MicrofacetGaussianShader : public Shader {
 public:
-	GMMBRDFShader(Renderer *renderer, const Texture *reflectance)
+	MicrofacetGaussianShader(Renderer *renderer, const Texture *reflectance)
 		: Shader(renderer, EBSDFShader), m_reflectance(reflectance) {
 		m_reflectanceShader = renderer->registerShaderForResource(m_reflectance.get());
 	}
@@ -254,11 +251,11 @@ private:
 	ref<Shader> m_reflectanceShader;
 };
 
-Shader *GMMBRDF::createShader(Renderer *renderer) const {
-	return new GMMBRDFShader(renderer, m_reflectance.get());
+Shader *MicrofacetGaussian::createShader(Renderer *renderer) const {
+	return new MicrofacetGaussianShader(renderer, m_reflectance.get());
 }
 
-MTS_IMPLEMENT_CLASS(GMMBRDFShader, false, Shader)
-MTS_IMPLEMENT_CLASS_S(GMMBRDF, false, BSDF)
-MTS_EXPORT_PLUGIN(GMMBRDF, "MERL BRDF")
+MTS_IMPLEMENT_CLASS(MicrofacetGaussianShader, false, Shader)
+MTS_IMPLEMENT_CLASS_S(MicrofacetGaussian, false, BSDF)
+MTS_EXPORT_PLUGIN(MicrofacetGaussian, "MERL BRDF")
 MTS_NAMESPACE_END
