@@ -1,1 +1,17 @@
-Mitsuba Plugins
+This folder contains Mitsuba Plugins for the dj_brdf library.
+
+To install, copy all the plugins, as well as the dj_brdf.h file into 
+the src/bsdfs/ folder of the Mitsuba repository, and add them to the 
+build script, e.g., add the following lines to the SconsScript file
+	# Materials from the dj_brdf library
+	plugins += env.SharedLibrary('merl_abc', ['abc.cpp'])
+	plugins += env.SharedLibrary('merl_accelerated', ['merl.cpp'])
+	plugins += env.SharedLibrary('merl_ggx', ['merl_ggx.cpp'])
+	plugins += env.SharedLibrary('merl_gaussian', ['merl_gaussian.cpp'])
+	plugins += env.SharedLibrary('merl_sgd', ['sgd.cpp'])
+	plugins += env.SharedLibrary('merl_tabulated', ['merl_tabulated.cpp'])
+	plugins += env.SharedLibrary('utia_accelerated', ['utia.cpp'])
+	plugins += env.SharedLibrary('utia_tabulated', ['utia_tabulated.cpp'])
+You may now recompile Mistuab and start using the plugins.
+
+
