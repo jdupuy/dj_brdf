@@ -5,14 +5,12 @@ the src/bsdfs/ folder of the Mitsuba repository, and add them to the
 build script, e.g., add the following lines to the SconsScript file
 
 # Materials from the dj_brdf library
-plugins += env.SharedLibrary('merl_abc', ['merl_abc.cpp'])
-plugins += env.SharedLibrary('merl_accelerated', ['merl_ref.cpp'])
-plugins += env.SharedLibrary('merl_ggx', ['merl_ggx.cpp'])
-plugins += env.SharedLibrary('merl_gaussian', ['merl_gaussian.cpp'])
-plugins += env.SharedLibrary('merl_sgd', ['merl_sgd.cpp'])
-plugins += env.SharedLibrary('merl_tabulated', ['merl_tab.cpp'])
-plugins += env.SharedLibrary('utia_accelerated', ['utia_ref.cpp'])
-plugins += env.SharedLibrary('utia_tabulated', ['utia_tab.cpp'])
+plugins += env.SharedLibrary('dj_brdf', ['dj_brdf.cpp'])
+plugins += env.SharedLibrary('dj_merl', ['dj_merl.cpp'])
+plugins += env.SharedLibrary('dj_utia', ['dj_utia.cpp'])
+plugins += env.SharedLibrary('dj_abc',  ['dj_abc.cpp'])
+plugins += env.SharedLibrary('dj_sgd',  ['dj_sgd.cpp'])
+plugins += env.SharedLibrary('dj_beckmannconductor', ['dj_beckmannconductor.cpp'])
 
 You may now recompile Mitsuba and start using the plugins.
 
