@@ -14,4 +14,10 @@ plugins += env.SharedLibrary('dj_beckmannconductor', ['dj_beckmannconductor.cpp'
 
 You may now recompile Mitsuba and start using the plugins.
 
+The dj_beckmannconductor plugin allows users to load normal maps with 
+LEAN/LEADR map filtering. You can generate custom LEAN texture maps from 
+the utilities I provide in the utils/ folder. Note that I already provide
+a few maps in the dj_matpreview.zip file.
+
+
 
