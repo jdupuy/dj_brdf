@@ -1,4 +1,4 @@
-This branch contains the source code used to produce the results of my PhD 
+This repository contains the source code used to produce the results of my PhD 
 Thesis "Photorealistic Rendering with Microfacet Theory", which is available 
 here: https://hal.archives-ouvertes.fr/tel-01291974
 For more information on how to use the library, see the dj_brdf.h file. For 
@@ -15,3 +15,6 @@ Here's a quick list of features
 - Added C++ tools to create LEAN/LEADR maps from displacement maps and normal 
   maps (see utils/ folder)
 
+Those who wish to get the code to reproduce the results from my EGSR 2015 
+paper entitled "Extracting Microfacet-based BRDF Parameters from Arbitrary 
+Materials with Power Iterations" should clone the esgr_2015 branch.
