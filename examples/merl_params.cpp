@@ -2,7 +2,7 @@
 // microfacet distributions fitted from MERL material
 
 // compile
-// g++ -Wall -O3 -I../ merl_params.cpp -o merl_params -lm
+// g++ -O3 -I../ merl_params.cpp -o merl_params -lm
 
 // run
 // ./merl_params path_to_merl.binary
@@ -53,20 +53,18 @@ int main(int argc, char **argv)
 	for (i = 1; i < argc; ++i) {
 		const char *input = argv[i];
 		djb::merl merl(input);
-		djb::tabular tab(djb::microfacet::GAF_SMITH, merl, 90, true);
-		djb::ggx *ggx = djb::tabular::to_ggx(tab);
-		djb::gaussian *gaussian = djb::tabular::to_gaussian(tab);
+		djb::tabular tab(merl, 90);
+		djb::microfacet::params params_beckmann = 
+			djb::tabular::fit_beckmann_parameters(tab);
+		djb::microfacet::params params_ggx = 
+			djb::tabular::fit_ggx_parameters(tab);
 		char name[64];
-		double alpha_x, alpha_g;
-		const double sqrt_2 = sqrt(2.f);
+		float beckmann, ggx, dummy;
 
 		sscanf(strrchr(input, '/') + 1, "%[^.]s", name);
-		ggx->get_roughness(&alpha_x, NULL, NULL);
-		gaussian->get_roughness(&alpha_g, NULL, NULL);
-		fprintf(pf, "%s %.3f %.3f\n", name, alpha_g * sqrt_2, alpha_x);
-
-		delete ggx;
-		delete gaussian;
+		params_beckmann.get_ellipse(&beckmann, &dummy, NULL);
+		params_ggx.get_ellipse(&ggx, &dummy, NULL);
+		fprintf(pf, "%s %.3f %.3f\n", name, beckmann, ggx);
 	}
 
 	fclose(pf);
