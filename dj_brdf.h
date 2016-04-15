@@ -10,14 +10,21 @@ by Jonathan Dupuy
    define DJB_ASSERT(x) to avoid using assert.h.
    define DJB_LOG(format, ...) to use your own logger (default prints in stdout)
 
-   QUICK NOTES:
-       This is research code
+   QUICK NOTES
+       1. This is research code ;)
+       2. I have introduced sigma functions in the microfacet BRDF interface.
+          These functions are used for the Smith term because they are more 
+          numerically stable than the G1 functions I defined in my thesis, 
+          especially in noncentral configurations. This approach also allows 
+          to avoid singulatities when either theta_o or theta_i approach pi/2. 
+          In microflake theory, the sigma function corresponds to the projected 
+          area of the flakes in a specific direction (see, e.g., "The SGGX 
+          Microflake Distribution").
+       3. For people who are used to light transport / Mitsuba BSDF conventions: 
+          I follow a "reversed" convention as:
+          => the parameter 'i' denotes the direction towards the light source 
+          => the parameter 'o' denotes the direction towards the viewer
 
-*/
-
-/*
-TODO
- - implement sampling of visible normals
 */
 
 #ifndef DJB_INCLUDE_DJ_BRDF_H
@@ -28,6 +35,16 @@ TODO
 
 namespace djb {
 
+/* Floating point precision */
+#if DJB_USE_DOUBLE_PRECISION
+typedef double float_t;
+#else
+typedef float float_t;
+#endif
+#ifndef DJB_EPSILON
+#define DJB_EPSILON (float_t)1e-4
+#endif
+
 /* Exception API */
 struct exc : public std::exception {
 	exc(const char *fmt, ...);
@@ -36,36 +53,68 @@ struct exc : public std::exception {
 	std::string m_str;
 };
 
-/* Utilities */
-struct dir;
+/* Standalone vec3 utility */
 struct vec3 {
 	static vec3 from_raw(const double *v) {return vec3(v[0], v[1], v[2]);}
-	static const double *to_raw(const vec3& v) {return &v.x;}
-	explicit vec3(double x = 0): x(x), y(x), z(x) {}
-	vec3(double x, double y, double z) : x(x), y(y), z(z) {}
-	explicit vec3(const dir& dir);
-	double intensity() const {return 0.2126 * x + 0.7152 * y + 0.0722 * z;}
-	double x, y, z;
-};
-struct dir {
-	explicit dir(double theta = 0, double phi = 0) : theta(theta), phi(phi) {}
-	explicit dir(const vec3 &p);
-	double theta, phi;
+	static vec3 from_raw(const float *v) {return vec3(v[0], v[1], v[2]);}
+	static const float_t *to_raw(const vec3& v) {return &v.x;}
+	explicit vec3(float_t x = 0): x(x), y(x), z(x) {}
+	vec3(float_t x, float_t y, float_t z) : x(x), y(y), z(z) {}
+	explicit vec3(float_t theta, float_t phi);
+	float_t intensity() const {return (float_t)0.2126 * x + (float_t)0.7152 * y + (float_t)0.0722 * z;}
+	float_t x, y, z;
 };
 
 /* BRDF interface */
 class brdf {
 public:
-	virtual vec3 eval(const dir& in, const dir& out) const = 0;  // fr
-	virtual vec3 eval_hd(const dir& half, const dir& diff) const;
-	virtual vec3 evalp(const dir& in, const dir& out) const; // fr * cos
-	virtual vec3 evalp_hd(const dir& half, const dir& diff) const;
-	virtual vec3 evalp_mc(const dir& out, double u1, double u2, 
-	                      dir *in, double *pdf) const; // fr * cos / pdf
-	virtual dir sample(const dir& out, double u1, double u2) const;
-	virtual double pdf(const dir& out, const dir& m) const;
+	// evaluate f_r
+	virtual vec3 eval(const vec3& i, const vec3& o,
+	                  const void *user_param = NULL) const = 0;
+	virtual vec3 eval_hd(const vec3& h, const vec3& d,
+	                     const void *user_param = NULL) const;
+	// evaluate f_r * cos
+	virtual vec3 evalp(const vec3& i, const vec3& o,
+	                   const void *user_param = NULL) const;
+	virtual vec3 evalp_hd(const vec3& h, const vec3& d,
+	                      const void *user_param = NULL) const;
+	// evaluate f_r * cos / pdf
+	virtual vec3 evalp_is(float_t u1, float_t u2,
+	                      const vec3& o,
+	                      vec3 *i, float_t *pdf,
+	                      const void *user_param = NULL) const;
+	// importance sample f_r * cos using two uniform numbers
+	virtual vec3 sample(float_t u1, float_t u2,
+	                    const vec3& o,
+	                    const void *user_param = NULL) const;
+	// evaluate the PDF of a sample
+	virtual float_t pdf(const vec3& i, const vec3& o,
+	                    const void *user_param = NULL) const;
+	// utilities
+	static void io_to_hd(const vec3& i, const vec3& o, vec3 *h, vec3 *d);
+	static void hd_to_io(const vec3& h, const vec3& d, vec3 *i, vec3 *o);
+	// ctor / dtor
+	brdf() {}
 	virtual ~brdf() {}
-	virtual bool is_isotropic() const {return false;}
+#if 1 // noncopyable
+private:
+	brdf(const brdf& fr);
+	brdf& operator=(const brdf& fr);
+#endif
+};
+
+/* Lambertian BRDF */
+class lambert : public brdf {
+public:
+	/* Lambertian Parameters */
+	class params {
+	public:
+		params(const vec3& reflectance = vec3(1));
+		vec3 m_reflectance;
+	};
+	/* Implementation */
+	vec3 eval(const vec3& i, const vec3& o,
+	          const void *user_param = NULL) const;
 };
 
 /* MERL BRDF */
@@ -73,27 +122,9 @@ class merl : public brdf {
 	std::vector<double> m_samples;
 public:
 	merl(const char *filename);
-	vec3 eval(const dir& in, const dir& out) const;
-	bool is_isotropic() const {return true;}
+	vec3 eval(const vec3& in, const vec3& out,
+	          const void *user_param = NULL) const;
 	const std::vector<double>& get_samples() const {return m_samples;}
-};
-
-/* MIT 2005 BRDF */
-class mit05 : public brdf {
-	std::vector<float> m_samples;
-	int32_t m_dims[4];
-public:
-	mit05(const char *filename);
-	vec3 eval(const dir& in, const dir& out) const;
-	const std::vector<float>& get_samples() const {return m_samples;}
-private:
-	void enforce_reciprocity();
-	void dir2index(const dir& in, const dir& out,
-	               int *i1, int *i2, int *i3, int *i4) const;
-	void index2dir(int i1, int i2, int i3, int i4,
-	               dir *in, dir *out) const;
-	void rgbindex(int i1, int i2, int i3, int i4,
-	              int *r, int *g, int *b) const;
 };
 
 /* UTIA BRDF */
@@ -102,7 +133,8 @@ class utia : public brdf {
 	double m_norm;
 public:
 	utia(const char *filename);
-	vec3 eval(const dir& in, const dir& out) const;
+	vec3 eval(const vec3& in, const vec3& out,
+	          const void *user_param = NULL) const;
 	const std::vector<double>& get_samples() const {return m_samples;}
 private:
 	void normalize();
@@ -110,44 +142,51 @@ private:
 
 /* Fresnel API */
 namespace fresnel {
+	/* Utilities */
+	void ior_to_f0(float_t ior, float_t *f0);
+	void ior_to_f0(const vec3& ior, vec3 *f0);
+	void f0_to_ior(float_t f0, float_t *ior);
+	void f0_to_ior(const vec3& f0, vec3 *ior);
+
+	/* Interface */
 	class impl {
 	public:
 		virtual ~impl() {}
-		virtual vec3 eval(double theta) const = 0;
+		virtual vec3 eval(float_t cos_theta_d) const = 0;
 		virtual impl *copy() const = 0;
 	};
 
 	/* Ideal Specular Reflection */
 	class ideal : public impl {
 	public:
-		vec3 eval(double theta) const {return vec3(1);}
+		vec3 eval(float_t cos_theta_d) const {return vec3(1);}
 		impl *copy() const {return new ideal();}
 	};
 
 	/* Fresnel for Unpolarized Light */
 	class unpolarized : public impl {
-	public:
 		vec3 ior; // index of refraction
+	public:
 		unpolarized(const vec3& ior): ior(ior) {}
-		vec3 eval(double theta) const;
+		vec3 eval(float_t cos_theta_d) const;
 		impl *copy() const {return new unpolarized(*this);}
 	};
 
 	/* Schlick's Fresnel */
 	class schlick : public impl {
+		vec3 f0; // backscattering fresnel
 	public:
-		vec3 f0; // schlick's fresnel factor
-		schlick(const vec3& f0): f0(f0) {}
-		vec3 eval(double theta) const;
+		schlick(const vec3& f0);
+		vec3 eval(float_t cos_theta_d) const;
 		impl *copy() const {return new schlick(*this);}
 	};
 
 	/* SGD's Fresnel */
 	class sgd : public impl {
-	public:
 		vec3 f0, f1;
+	public:
 		sgd(const vec3& f0, const vec3& f1) : f0(f0), f1(f1) {}
-		vec3 eval(double theta) const;
+		vec3 eval(float_t cos_theta_d) const;
 		impl *copy() const {return new sgd(*this);}
 	};
 
@@ -157,269 +196,272 @@ namespace fresnel {
 	public:
 		explicit spline(const std::vector<vec3>& points): m_points(points) {}
 		const std::vector<vec3>& get_points() const {return m_points;}
-		vec3 eval(double theta) const;
+		vec3 eval(float_t cos_theta_d) const;
 		impl *copy() const {return new spline(*this);}
 	};
-};
+}; // namespace fresnel
 
 /* Microfacet API */
 class microfacet : public brdf {
 public:
-	enum {GAF_NONE, GAF_VGROOVE, GAF_SMITH};
+	/* microfacet parameters */
+	class params {
+		friend class microfacet;
+	public:
+		// Factories
+		static params standard();
+		static params isotropic(float_t a);
+		static params elliptic(float_t a1, float_t a2, float_t phi_a = 0.0);
+		static params pdfparams(float_t ax, float_t ay, float_t rho = 0.0,
+		                        float_t tx_n = 0.0, float_t ty_n = 0.0);
+		// mutators
+		void set_ellipse(float_t a1, float_t a2, float_t phi_a = 0.0);
+		void set_pdfparams(float_t ax, float_t ay, float_t rho = 0.0,
+		                   float_t tx_n = 0.0, float_t ty_n = 0.0);
+		void set_location(float_t tx_n, float_t ty_n);
+		void set_location(const vec3& n);
+		// accessors
+		void get_ellipse(float_t *a1, float_t *a2, float_t *phi_a = NULL) const;
+		void get_pdfparams(float_t *ax, float_t *ay, float_t *rho = NULL,
+		                   float_t *tx_n = NULL, float_t *ty_n = NULL) const;
+		void get_location(float_t *tx_n, float_t *ty_n) const;
+		void get_location(vec3 *n) const;
+		// Ctors (prefer factories for construction)
+		params(float_t a1 = 1.0, float_t a2 = 1.0, float_t phi_a = 0.0);
+		params(float_t ax, float_t ay, float_t rho, float_t tx_n, float_t ty_n);
+	private:
+		vec3 m_n; // mean normal
+		float_t m_a1, m_a2, m_phi_a; // ellipse parameters
+		float_t m_ax, m_ay; // scale parameters
+		float_t m_rho, m_sqrt_one_minus_rho_sqr; // correlation
+		float_t m_tx_n, m_ty_n; // location parameters
+	};
+	// Dtor
 	virtual ~microfacet() {delete m_fresnel;}
-	vec3 eval(const dir& i, const dir& o) const;
-	vec3 evalp(const dir& i, const dir& o) const;
-	virtual double p22(const dir& h) const = 0;
-	virtual double g1(const dir& k) const = 0;
-	double ndf(const dir& h) const;
-	double gaf(const dir& i, const dir& o, const dir& h) const;
-	vec3 eval_fresnel(double theta) const {return m_fresnel->eval(theta);}
-
-	// queries
-	virtual bool is_isotropic() const {return m_r1 == m_r2;}
-
+	// BRDF interface
+	vec3 eval(const vec3& i, const vec3& o,
+	          const void *user_param = NULL) const;
+	vec3 evalp(const vec3& i, const vec3& o,
+	           const void *user_param = NULL) const;
+	vec3 sample(float_t u1, float_t u2, const vec3& o,
+	            const void *user_param = NULL) const;
+	float_t pdf(const vec3& i, const vec3& o,
+	            const void *user_param = NULL) const;
+	vec3 evalp_is(float_t u1, float_t u2, const vec3& o,
+	              vec3 *i, float_t *pdf, const void *user_param = NULL) const;
+	// eval queries
+	vec3 fresnel(float_t cos_theta_d) const {return m_fresnel->eval(cos_theta_d);}
+	float_t ndf(const vec3& h,
+	            const params& params = params::standard()) const;
+	float_t gaf(const vec3& h, const vec3& i, const vec3& o,
+	            const params& params = params::standard()) const;
+	float_t g1(const vec3& h, const vec3& k,
+	           const params& params = params::standard()) const;
+	float_t sigma(const vec3& k,
+	              const params& params = params::standard()) const;
+	float_t p22(float_t x, float_t y,
+	            const params& params = params::standard()) const;
+	float_t vp22(float_t x, float_t y, const vec3& k,
+	             const params& params = params::standard()) const;
+	float_t vndf(const vec3& h, const vec3& k,
+	             const params& params = params::standard()) const;
+	// sampling queries
+	virtual bool supports_smith_vndf_sampling() const = 0;
+	virtual float_t qf2(float_t u, const vec3& k) const;
+	virtual float_t qf3(float_t u, const vec3& k, float_t qf2) const;
 	// mutators
-	void set_gaf(int gaf);
 	void set_shadow(bool shadow) {m_shadow = shadow;}
 	void set_fresnel(const fresnel::impl& f);
-	virtual void set_roughness(double r1, double r2, double rangle = 0);
-	virtual void set_roughness(double r) {set_roughness(r, r);}
-	void set_covariance(double m11, double m22, double m12);
-
 	// accessors
-	int get_gaf() const {return m_gaf;}
 	int get_shadow() const {return m_shadow;}
-	const fresnel::impl& get_fresnel() const {return *m_fresnel;} // FIXME dangerous!
-	void get_covariance(double *var1, double *var2, double *cov) const;
-	void get_roughness(double *r1, double *r2, double *rangle) const;
+	const fresnel::impl& get_fresnel() const {return *m_fresnel;}
 protected:
-	microfacet(int gaf,
-	           double r,
-	           const fresnel::impl& f = fresnel::ideal(),
+	// ctor
+	microfacet(const fresnel::impl& f = fresnel::ideal(),
 	           bool shadow = true);
-	microfacet(int gaf,
-	           double r1,
-	           double r2,
-	           double rangle,
-	           const fresnel::impl& f = fresnel::ideal(),
-	           bool shadow = true);
-	double gaf_nmap(const dir& i, const dir& o, const dir& h) const;
-	double gaf_vgroove(const dir& i, const dir& o, const dir& h) const;
-	double gaf_smith(const dir& i, const dir& o, const dir& h) const;
-
+	// microfacet interfaces
+	virtual float_t sigma_std(const vec3& k) const = 0; // standard masking
+	virtual float_t p22_std(float_t x, float_t y) const = 0; // standard slope pdf
+	// sampling functions
+	virtual void sample_vp22_std_smith(float_t u1, float_t u2, const vec3& k,
+	                                   float_t *xslope, float_t *yslope) const;
+	virtual void sample_vp22_std_nmap(float_t u1, float_t u2, const vec3& k,
+	                                  float_t *xslope, float_t *yslope) const = 0;
+	// members
 	const fresnel::impl *m_fresnel;
-	double m_r1, m_r2, m_rangle;
-	double m_m11, m_m22, m_m12, m_det;
-	double m_sigma1, m_sigma2; // scale
-	double m_rho, m_sqrt_one_minus_rho_sqr; // correlation
-	int m_gaf;
 	bool m_shadow;
 };
 
 /* Radial microfacets */
 class radial : public microfacet {
 public:
-	radial(int gaf,
-	       double r,
-	       const fresnel::impl& fresnel = fresnel::ideal(),
-	       bool shadow = true):
-		microfacet(gaf, r, fresnel, shadow) {}
-	radial(int gaf,
-	       double r1,
-	       double r2,
-	       double rangle,
-	       const fresnel::impl& fresnel = fresnel::ideal(),
-	       bool shadow = true):
-		microfacet(gaf, r1, r2, rangle, fresnel, shadow) {}
-	double p22(const dir& h) const;
-	double g1(const dir& k) const;
-	dir sample(const dir& out, double u1, double u2) const;
-	double pdf(const dir& out, const dir& m) const;
-
+	radial(const fresnel::impl& fresnel = fresnel::ideal(),
+	       bool shadow = true): microfacet(fresnel, shadow)
+	{}
 	// queries
-	virtual double g1_radial(double z) const = 0;
-	virtual double p22_radial(double z) const = 0;
-	virtual double cdf_radial(double theta) const = 0;
-	virtual double qf_radial(double x) const = 0;
-
-	// optional interface with explicit roughness parameters
-	// using this interface ensures thread safety for radial microfacet BRDFs
-#if 1
-	double p22_explicit(const dir& h, double r) const;
-	double p22_explicit(const dir& h, double r1, double r2, double rangle = 0.0) const;
-
-	double ndf_explicit(const dir& h, double r) const;
-	double ndf_explicit(const dir& h, double r1, double r2, double rangle = 0.0) const;
-
-	double gaf_explicit(const dir& i, const dir& o, const dir& h, double r) const;
-	double gaf_explicit(const dir& i, const dir& o, const dir& h, double r1, double r2, double rangle = 0.0) const;
-
-	double g1_explicit(const dir& k, double r) const;
-	double g1_explicit(const dir& k, double r1, double r2, double rangle = 0.0) const;
-
-	vec3 evalp_explicit(const dir& i, const dir& o, double r) const;
-	vec3 evalp_explicit(const dir& i, const dir& o, double r1, double r2, double rangle = 0.0) const;
-
-	dir sample_explicit(const dir& out, double u1, double u2, double r) const;
-	dir sample_explicit(const dir& out, double u1, double u2, double r1, double r2, double rangle = 0.0) const;
-#endif
-	// end of optional interface
-
+	virtual float_t p22_radial(float_t r_sqr) const = 0;
+	virtual float_t sigma_std_radial(float_t cos_theta_k) const = 0;
+	virtual float_t cdf_radial(float_t r) const = 0;
+	virtual float_t qf_radial(float_t u) const = 0;
+	virtual float_t qf2_radial(float_t u, 
+	                           float_t cos_theta_k,
+	                           float_t sin_theta_k) const;
+	virtual float_t qf3_radial(float_t u, float_t qf2) const;
 private:
-	dir sample_nmap(const dir& out, double u1, double u2) const;
-	dir sample_vgroove(const dir& out, double u1, double u2) const;
-	dir sample_smith(const dir& out, double u1, double u2) const;
-	double pdf_nmap(const dir& out, const dir& m) const;
-	double pdf_vgroove(const dir& out, const dir& m) const;
-	double pdf_smith(const dir& out, const dir& m) const;
+	// eval
+	float_t p22_std(float_t x, float_t y) const;
+	float_t sigma_std(const vec3& k) const;
+	// sample
+	void sample_vp22_std_nmap(float_t u1, float_t u2, const vec3& o,
+	                          float_t *xslope, float_t *yslope) const;
+	void sample_vp22_std_smith(float_t u1, float_t u2, const vec3& o,
+	                           float_t *xslope, float_t *yslope) const;
 };
 
-/* Gaussian Microfacet NDF */
-class gaussian : public radial {
+/* Beckmann Microfacet NDF */
+class beckmann : public radial {
 public:
-	gaussian(int gaf,
-	         double r,
-	         const fresnel::impl& fresnel = fresnel::ideal(),
-	         bool shadow = true): radial(gaf, r, r, 0, fresnel, shadow)
-	{}
-	gaussian(int gaf,
-	         double r1,
-	         double r2,
-	         double rangle,
-	         const fresnel::impl& fresnel = fresnel::ideal(),
-	         bool shadow = true): radial(gaf, r1, r2, rangle, fresnel, shadow)
+	// Linear Representation
+	class lrep {
+		friend class beckmann;
+		public:
+		// Ctor
+		lrep(float_t E1 = 0, float_t E2 = 0,
+		     float_t E3 = 1, float_t E4 = 1,
+		     float_t E5 = 0);
+		// linear operators
+		lrep operator+(const lrep& r) const; // combine
+		lrep operator*(float_t sc) const; // scale
+		lrep& operator+=(const lrep& rep); // compound combine
+		lrep& operator*=(float_t sc); // compound scale
+		// utilities
+		void scale(float_t sc);
+		void scale(float_t x, float_t y);
+		void shear(float_t x, float_t y);
+		void reparameterize(float_t dudx, float_t dvdx,
+		                    float_t dudy, float_t dvdy);
+	private:
+		// members
+		float_t m_E1, m_E2; // first order slope moments
+		float_t m_E3, m_E4; // second order slope moments
+		float_t m_E5; // first order joint slope moment
+	};
+	// utilities
+	static void params_to_lrep(const microfacet::params& params, lrep *lrep);
+	static void lrep_to_params(const lrep& lrep, microfacet::params *params);
+	// ctor
+	beckmann(const fresnel::impl& fresnel = fresnel::ideal(),
+	         bool shadow = true): radial(fresnel, shadow)
 	{}
 	// queries
-	double p22_radial(double z) const;
-	double g1_radial(double z) const;
-	double cdf_radial(double theta) const;
-	double qf_radial(double x) const;
+	float_t p22_radial(float_t r_sqr) const;
+	float_t sigma_std_radial(float_t cos_theta_k) const;
+	float_t cdf_radial(float_t r) const;
+	float_t qf_radial(float_t u) const;
+	float_t qf1(float_t u) const;
+	float_t qf2_radial(float_t u, 
+	                   float_t cos_theta_k, float_t sin_theta_k) const;
+	float_t qf3_radial(float_t u, float_t qf2) const;
+	bool supports_smith_vndf_sampling() const {return true;}
 };
 
 /* GGX Microfacet NDF */
 class ggx : public radial {
 public:
-	ggx(int gaf,
-	    double r,
-	    const fresnel::impl& fresnel = fresnel::ideal(),
-	    bool shadow = true): radial(gaf, r, r, 0.0, fresnel, shadow)
-	{}
-	ggx(int gaf,
-	    double r1,
-	    double r2,
-	    double rangle,
-	    const fresnel::impl &fresnel = fresnel::ideal(),
-	    bool shadow = true): radial(gaf, r1, r2, rangle, fresnel, shadow)
+	ggx(const fresnel::impl& fresnel = fresnel::ideal(),
+	    bool shadow = true): radial(fresnel, shadow)
 	{}
 	// queries
-	double p22_radial(double z) const;
-	double g1_radial(double z) const;
-	double cdf_radial(double theta) const;
-	double qf_radial(double x) const;
+	float_t p22_radial(float_t r_sqr) const;
+	float_t sigma_std_radial(float_t cos_theta_k) const;
+	float_t cdf_radial(float_t r) const;
+	float_t qf_radial(float_t u) const;
+	float_t qf1(float_t u) const;
+	float_t qf2_radial(float_t u, 
+	                   float_t cos_theta_k, float_t sin_theta_k) const;
+	float_t qf3_radial(float_t u, float_t qf2) const;
+	bool supports_smith_vndf_sampling() const {return true;}
+private:
+	float_t qf3_rational_approx(float_t u) const;
 };
 
 /* Tabulated Microfacet NDF */
 class tabular : public radial {
-	std::vector<double> m_p22;
-	std::vector<double> m_g1;
-	std::vector<double> m_cdf;
-	std::vector<double> m_qf;
-	// tables for VNDF sampling
-	std::vector<double> m_pdf1;
-	std::vector<double> m_pdf2;
-	std::vector<double> m_cdf1;
-	std::vector<double> m_cdf2;
-	std::vector<double> m_qf1;
-	std::vector<double> m_qf2;
+	std::vector<float_t> m_p22;
+	std::vector<float_t> m_sigma;
+	// tables for Nmap VNDF sampling
+	std::vector<float_t> m_cdf;
+	std::vector<float_t> m_qf;
 public:
-	tabular(int gaf, const brdf& brdf, int resolution, bool shadow = true);
-	static gaussian *to_gaussian(const tabular& tabular);
-	static ggx *to_ggx(const tabular& tabular);
-	const std::vector<double>& get_p22v() const {return m_p22;}
-	const std::vector<double>& get_g1v() const {return m_g1;}
-	const std::vector<double>& get_cdfv() const {return m_cdf;}
-	const std::vector<double>& get_qfv() const {return m_qf;}
+	tabular(const brdf& brdf, int resolution, bool shadow = true);
+	static microfacet::params fit_beckmann_parameters(const tabular& tabular);
+	static microfacet::params fit_ggx_parameters(const tabular& tabular);
+	const std::vector<float_t>& get_p22v() const {return m_p22;}
+	const std::vector<float_t>& get_sigmav() const {return m_sigma;}
+	const std::vector<float_t>& get_cdfv() const {return m_cdf;}
+	const std::vector<float_t>& get_qfv() const {return m_qf;}
 	// queries
-	double p22_radial(double z) const;
-	double g1_radial(double z) const;
-	double cdf_radial(double theta) const;
-	double qf_radial(double x) const;
+	float_t p22_radial(float_t r_sqr) const;
+	float_t sigma_std_radial(float_t cos_theta_k) const;
+	float_t cdf_radial(float_t r) const;
+	float_t qf_radial(float_t u) const;
+	bool supports_smith_vndf_sampling() const {return false;}
 private:
-	void compute_p22_nmap(const brdf& brdf, int res);
-	void compute_p22_vgroove(const brdf& brdf, int res);
+	// eval precomputations
 	void compute_p22_smith(const brdf& brdf, int res);
+	void compute_fresnel(const brdf& brdf, int res);
 	void normalize_p22();
-	void compute_g1();
+	void compute_sigma();
+	// sample precomputations
 	void compute_cdf();
 	void compute_qf();
-	void compute_fresnel(const brdf& brdf, int res);
+	void compute_pdf1();
+	void normalize_pdf1();
 };
 
 /* Tabulated Anisotropic Microfacet NDF */
 class tabular_anisotropic : public microfacet {
-	std::vector<double> m_p22;
-	std::vector<double> m_g1;
-	std::vector<double> m_pdf1;
-	std::vector<double> m_pdf2;
-	std::vector<double> m_cdf1;
-	std::vector<double> m_cdf2;
-	std::vector<double> m_qf1;
-	std::vector<double> m_qf2;
+	std::vector<float_t> m_p22;
+	std::vector<float_t> m_sigma;
+	std::vector<float_t> m_pdf1;
+	std::vector<float_t> m_pdf2;
+	std::vector<float_t> m_cdf1;
+	std::vector<float_t> m_cdf2;
+	std::vector<float_t> m_qf1;
+	std::vector<float_t> m_qf2;
 	int m_elevation_res;
 	int m_azimuthal_res;
+	bool supports_smith_vndf_sampling() const {return false;}
 public:
-	tabular_anisotropic(int gaf,
-	                    const brdf& brdf,
+	tabular_anisotropic(const brdf& brdf,
 	                    int elevation_res,
 	                    int azimuthal_res,
 	                    bool shadow = true);
-	double p22(const dir& h) const;
-	double g1(const dir& k) const;
-	dir sample(const dir& out, double u1, double u2) const;
-	double pdf(const dir& out, const dir& m) const;
-	double pdf1(double phi) const;
-	double pdf2(double theta, double phi) const;
-	double cdf1(double phi) const;
-	double cdf2(double theta, double phi) const;
-	double qf1(double u1) const;
-	double qf2(double u2, double u1) const;
-	const std::vector<double>& get_p22v(int *elevc, int *azimc) const;
-	const std::vector<double>& get_g1v(int *elevc, int *azimc) const;
-	bool is_isotropic() const {return false;}
-	static gaussian *to_gaussian(const tabular_anisotropic& tabular);
-	static ggx *to_ggx(const tabular_anisotropic& tabular);
-
-	// optional interface with explicit roughness parameters
-	// using this interface ensures thread safety for tabular microfacet BRDFs
-#if 1
-	double p22_explicit(const dir& h, double r) const;
-	double p22_explicit(const dir& h, double r1, double r2, double rangle = 0.0) const;
-
-	double ndf_explicit(const dir& h, double r) const;
-	double ndf_explicit(const dir& h, double r1, double r2, double rangle = 0.0) const;
-
-	double gaf_explicit(const dir& i, const dir& o, const dir& h, double r) const;
-	double gaf_explicit(const dir& i, const dir& o, const dir& h, double r1, double r2, double rangle = 0.0) const;
-
-	double g1_explicit(const dir& k, double r) const;
-	double g1_explicit(const dir& k, double r1, double r2, double rangle = 0.0) const;
-
-	vec3 evalp_explicit(const dir& i, const dir& o, double r) const;
-	vec3 evalp_explicit(const dir& i, const dir& o, double r1, double r2, double rangle = 0.0) const;
-
-	// XXX not implemented yet
-	dir sample_explicit(const dir& out, double u1, double u2, double r) const;
-	dir sample_explicit(const dir& out, double u1, double u2, double r1, double r2, double rangle = 0.0) const;
-#endif
-	// end of optional interface
+	static microfacet::params fit_beckmann_parameters(const tabular_anisotropic& tabular);
+	static microfacet::params fit_ggx_parameters(const tabular_anisotropic& tabular);
+	const std::vector<float_t>& get_p22v(int *elev_cnt, int *azim_cnt) const;
+	const std::vector<float_t>& get_sigmav(int *elev_cnt, int *azim_cnt) const;
+	// queries
+	float_t pdf1(float_t phi) const;
+	float_t pdf2(float_t theta, float_t phi) const;
+	float_t cdf1(float_t phi) const;
+	float_t cdf2(float_t theta, float_t phi) const;
+	float_t qf1(float_t u1) const;
+	float_t qf2(float_t u, float_t phi) const;
 private:
-	double p22(double x, double y) const;
-	void normalize_p22();
-	void compute_g1();
-	void compute_p22_nmap(const brdf& brdf);
-	void compute_p22_vgroove(const brdf& brdf);
+	// eval interface
+	float_t sigma_std(const vec3& k) const; // standard masking
+	float_t p22_std(float_t x, float_t y) const; // standard slope pdf
+	float_t p22_std_theta_phi(float_t theta, float_t phi) const; // standard slope pdf
+	// sample interface
+	void sample_vp22_std_nmap(float_t u1, float_t u2, const vec3& k,
+	                          float_t *xslope, float_t *yslope) const;
+	// eval precomputations
 	void compute_p22_smith(const brdf& brdf);
 	void compute_fresnel(const brdf& brdf, int res);
+	void normalize_p22();
+	void compute_sigma();
+	// sample precomputations
 	void compute_pdf1();
 	void compute_pdf2();
 	void normalize_pdf1();
@@ -454,12 +496,11 @@ class sgd : public brdf {
 public:
 	sgd(const char *name);
 	~sgd() {delete m_fresnel;}
-	vec3 eval(const dir& i, const dir& o) const;
-	vec3 ndf(const dir& h) const;
-	vec3 gaf(const dir& i, const dir& o, const dir& h) const;
-	vec3 g1(const dir& k) const;
-	vec3 eval_fresnel(double theta) const {return m_fresnel->eval(theta);}
-	virtual bool is_isotropic() const {return true;}
+	vec3 eval(const vec3& i, const vec3& o, const void *user_param) const;
+	vec3 ndf(const vec3& h) const;
+	vec3 gaf(const vec3& h, const vec3& i, const vec3& o) const;
+	vec3 g1(const vec3& k) const;
+	vec3 fresnel(float_t cos_theta_d) const {return m_fresnel->eval(cos_theta_d);}
 	const fresnel::impl &get_fresnel() const {return *m_fresnel;}
 };
 
@@ -474,17 +515,16 @@ class abc : public brdf {
 		double C;
 		double ior;
 	};
-	static const data s_data[8];
+	static const data s_data[12];
 	const fresnel::impl *m_fresnel;
 	const data *m_data;
 public:
 	abc(const char *name);
 	~abc() {delete m_fresnel;}
-	vec3 eval(const dir& i, const dir& o) const;
-	vec3 ndf(const dir& h) const;
-	double gaf(const dir& i, const dir& o, const dir& h) const;
-	vec3 eval_fresnel(double theta) const {return m_fresnel->eval(theta);}
-	virtual bool is_isotropic() const {return true;}
+	vec3 eval(const vec3& i, const vec3& o, const void *user_param) const;
+	vec3 ndf(const vec3& h) const;
+	float_t gaf(const vec3& h, const vec3& i, const vec3& o) const;
+	vec3 fresnel(float_t cos_theta_d) const {return m_fresnel->eval(cos_theta_d);}
 	const fresnel::impl &get_fresnel() const {return *m_fresnel;}
 };
 
@@ -500,6 +540,8 @@ public:
 #include <cstdarg>
 #include <iostream>     // std::ios, std::istream, std::cout
 #include <fstream>      // std::filebuf
+#include <cstring>      // memcpy
+#include <stdint.h>     // uint32_t
 
 #ifndef DJB_ASSERT
 #	include <assert.h>
@@ -521,6 +563,7 @@ namespace djb {
 // utility API
 template<typename T> static T min(const T& a, const T& b) {return a < b ? a : b;}
 template<typename T> static T max(const T& a, const T& b) {return a > b ? a : b;}
+template<typename T> static T sat(const T& x) {return min(T(1), max(T(0), x));}
 
 exc::exc(const char *fmt, ...)
 {
@@ -533,44 +576,38 @@ exc::exc(const char *fmt, ...)
 	m_str = std::string(buf);
 }
 
-dir::dir(const vec3& p)
+vec3::vec3(float_t theta, float_t phi)
 {
-	if (p.z > 0.99999) {
-		theta = phi = 0.0;
-	} else if (p.z < -0.99999) {
-		theta = M_PI;
-		phi = 0.0;
-	} else {
-		theta = acos(p.z);
-		phi = (p.z != 0.0) ? atan2(p.y, p.x) : 0.0;
-	}
-}
-
-vec3::vec3(const dir& dir)
-{
-	double s = sin(dir.theta);
-	x = s * cos(dir.phi);
-	y = s * sin(dir.phi);
-	z = cos(dir.theta);
+	float_t s = sin(theta);
+	x = s * cos(phi);
+	y = s * sin(phi);
+	z = cos(theta);
 }
 
 #define OP operator
 #define V3 vec3
-V3 OP*(double a, const V3& b) {return V3(a * b.x, a * b.y, a * b.z);}
-V3 OP*(const V3& a, double b) {return V3(b * a.x, b * a.y, b * a.z);}
-V3 OP/(const V3& a, double b) {return (1.0 / b) * a;}
+V3 OP*(float_t a, const V3& b) {return V3(a * b.x, a * b.y, a * b.z);}
+V3 OP*(const V3& a, float_t b) {return V3(b * a.x, b * a.y, b * a.z);}
+V3 OP/(const V3& a, float_t b) {return (1.0 / b) * a;}
 V3 OP*(const V3& a, const V3& b) {return V3(a.x * b.x, a.y * b.y, a.z * b.z);}
+V3 OP/(const V3& a, const V3& b) {return V3(a.x / b.x, a.y / b.y, a.z / b.z);}
 V3 OP+(const V3& a, const V3& b) {return V3(a.x + b.x, a.y + b.y, a.z + b.z);}
 V3 OP-(const V3& a, const V3& b) {return V3(a.x - b.x, a.y - b.y, a.z - b.z);}
 V3& OP+=(V3& a, const V3& b) {a.x+= b.x; a.y+= b.y; a.z+= b.z; return a;}
 V3& OP*=(V3& a, const V3& b) {a.x*= b.x; a.y*= b.y; a.z*= b.z; return a;}
-V3& OP*=(V3& a, double b) {a.x*= b; a.y*= b; a.z*= b; return a;}
+V3& OP*=(V3& a, float_t b) {a.x*= b; a.y*= b; a.z*= b; return a;}
 #undef V3
 #undef OP
 
-static double dot(const vec3& a, const vec3& b)
+static float_t inversesqrt(float_t x)
 {
-	return a.x * b.x + a.y * b.y + a.z * b.z;
+	DJB_ASSERT(x > 0.0);
+	return (1.0 / sqrt(x));
+}
+
+static float_t dot(const vec3& a, const vec3& b)
+{
+	return (a.x * b.x + a.y * b.y + a.z * b.z);
 }
 
 static vec3 cross(const vec3& a, const vec3& b)
@@ -582,10 +619,11 @@ static vec3 cross(const vec3& a, const vec3& b)
 
 static vec3 normalize(const vec3& v)
 {
-	double mag = sqrt(dot(v, v));
-	DJB_ASSERT(mag > 0.0 && "invalid vector magnitude");
+	float_t mag_sqr = dot(v, v);
+	if (mag_sqr <= 0.0) printf("%f %f %f\n", v.x, v.y, v.z);
+	DJB_ASSERT(mag_sqr > 0.0 && "invalid vector magnitude");
 
-	return ((1.0 / mag) * v);
+	return (inversesqrt(mag_sqr) * v);
 }
 
 template<typename T>
@@ -599,15 +637,32 @@ static T max3(const T& x, const T& y, const T& z)
 	return m;
 }
 
-static double erf(double x)
+static void xyz_to_theta_phi(const vec3& p, float_t *theta, float_t *phi)
+{
+	if (p.z > 0.99999) {
+		(*theta) = (*phi) = 0.0;
+	} else if (p.z < -0.99999) {
+		(*theta) = M_PI;
+		(*phi) = 0.0;
+	} else {
+		(*theta) = acos(p.z);
+		(*phi) = (p.z != 0.0) ? atan2(p.y, p.x) : 0.0;
+	}
+}
+
+// *************************************************************************************************
+// Special functions
+
+// See: http://www.johndcook.com/blog/cpp_erf/, by John D. Cook
+static float_t erf(float_t x)
 {
 	// constants
-	double a1 =  0.254829592;
-	double a2 = -0.284496736;
-	double a3 =  1.421413741;
-	double a4 = -1.453152027;
-	double a5 =  1.061405429;
-	double p  =  0.3275911;
+	float_t a1 =  (float_t)0.254829592;
+	float_t a2 = -(float_t)0.284496736;
+	float_t a3 =  (float_t)1.421413741;
+	float_t a4 = -(float_t)1.453152027;
+	float_t a5 =  (float_t)1.061405429;
+	float_t p  =  (float_t)0.3275911;
 
 	// Save the sign of x
 	int sign = 1;
@@ -616,10 +671,69 @@ static double erf(double x)
 	x = fabs(x);
 
 	// A&S formula 7.1.26
-	double t = 1.0/(1.0 + p*x);
-	double y = 1.0 - (((((a5*t + a4)*t) + a3)*t + a2)*t + a1)*t*exp(-x*x);
+	float_t t = 1.0/(1.0 + p*x);
+	float_t y = 1.0 - (((((a5*t + a4)*t) + a3)*t + a2)*t + a1)*t*exp(-x*x);
 
-	return sign*y;
+	return sign * y;
+}
+
+// See: Approximating the erfinv function, by Mike Giles
+static float_t erfinv(float_t u)
+{
+	float_t w, p;
+
+	w = -logf(((float_t)1.0 - u) * ((float_t)1.0 + u));
+	if (w < (float_t)5.0) {
+		w = w - (float_t)2.500000;
+		p = (float_t)2.81022636e-08;
+		p = (float_t)3.43273939e-07 + p * w;
+		p = (float_t)-3.5233877e-06 + p * w;
+		p = (float_t)-4.39150654e-06 + p * w;
+		p = (float_t)0.00021858087 + p * w;
+		p = (float_t)-0.00125372503 + p * w;
+		p = (float_t)-0.00417768164 + p * w;
+		p = (float_t)0.246640727 + p * w;
+		p = (float_t)1.50140941 + p * w;
+	} else {
+		w = sqrt(w) - (float_t)3.0;
+		p = (float_t)-0.000200214257;
+		p = (float_t)0.000100950558 + p * w;
+		p = (float_t)0.00134934322 + p * w;
+		p = (float_t)-0.00367342844 + p * w;
+		p = (float_t)0.00573950773 + p * w;
+		p = (float_t)-0.0076224613 + p * w;
+		p = (float_t)0.00943887047 + p * w;
+		p = (float_t)1.00167406 + p * w;
+		p = (float_t)2.83297682 + p * w;
+	}
+
+	return p * u;
+}
+
+// *************************************************************************************************
+// Sample warps
+
+static void
+uniform_to_concentric(float_t u1, float_t u2, float_t *x, float_t *y)
+{
+	/* Concentric map code with less branching (by Dave Cline), see
+	   http://psgraphics.blogspot.ch/2011/01/improved-code-for-concentric-map.html */
+	float_t r1 = 2.0 * u1 - 1.0;
+	float_t r2 = 2.0 * u2 - 1.0;
+	float_t phi, r;
+
+	if (r1 == 0 && r2 == 0) {
+		r = phi = 0;
+	} else if (r1 * r1 > r2 * r2) {
+		r = r1;
+		phi = (M_PI / 4.0) * (r2 / r1);
+	} else {
+		r = r2;
+		phi = (M_PI / 2.0) - (r1 / r2) * (M_PI / 4.0);
+	}
+
+	(*x) = r * cos(phi);
+	(*y) = r * sin(phi);
 }
 
 // *************************************************************************************************
@@ -627,105 +741,121 @@ static double erf(double x)
 
 //---------------------------------------------------------------------------
 // rotate vector along one axis
-static vec3 rotate_vector(const vec3& in, const vec3& axis, double angle)
+static vec3 rotate_vector(const vec3& x, const vec3& axis, float_t angle)
 {
-	double cos_angle = cos(angle);
-	vec3 out = cos_angle * in;
-	double tmp1 = dot(axis, in);
-	double tmp2 = tmp1 * (1.0 - cos_angle);
+	float_t cos_angle = cos(angle);
+	float_t sin_angle = sin(angle);
+	vec3 out = cos_angle * x;
+	float_t tmp1 = dot(axis, x);
+	float_t tmp2 = tmp1 * (1.0 - cos_angle);
 	out+= axis * tmp2;
-	out+= sin(angle) * cross(axis, in);
+	out+= sin_angle * cross(axis, x);
 
 	return out;
 }
 
-//---------------------------------------------------------------------------
-// convert standard coordinates to half vector/difference vector coordinates
-static void std_coords_to_half_diff_coords(
-	const dir& in, const dir& out,
-	dir& half, dir& diff
-) {
-	vec3 i = vec3(in);
-	vec3 o = vec3(out);
-	vec3 h = normalize(i + o);
-	vec3 t = vec3(0, 1, 0);
-	vec3 n = vec3(0, 0, 1);
-	half = dir(h);
-
-	vec3 tmp = rotate_vector(i, n, -half.phi);
-	vec3 d = normalize(rotate_vector(tmp, t, -half.theta));
-	diff = dir(d);
-}
-
-//---------------------------------------------------------------------------
-// convert half vector/difference vector coordinates to standard coordinates
-static void
-half_diff_coords_to_std(
-	const dir& half, const dir& diff,
-	dir& in, dir& out
-) {
-	vec3 h = vec3(half);
-	vec3 d = vec3(diff);
-	vec3 n = vec3(0, 0, 1);
-	vec3 t = vec3(0, 1, 0);
-
-	vec3 tmp = rotate_vector(d, t, half.theta);
-	vec3 i = normalize(rotate_vector(tmp, n, half.phi));
-	vec3 o = 2.0 * dot(i, h) * h - i;
-
-	in = dir(in);
-	out = dir(o);
-}
 
 // *************************************************************************************************
 // BRDF API
 
-vec3 brdf::eval_hd(const dir& half, const dir& diff) const
+void brdf::io_to_hd(const vec3& i, const vec3& o, vec3 *h, vec3 *d)
 {
-	dir in, out;
-	half_diff_coords_to_std(half, diff, in, out);
+	const vec3 y_axis = vec3(0, 1, 0);
+	const vec3 z_axis = vec3(0, 0, 1);
+	float_t theta_h, phi_h;
 
-	return eval(in, out);
+	(*h) = normalize(i + o);
+	xyz_to_theta_phi(*h, &theta_h, &phi_h);
+	vec3 tmp = rotate_vector(i, z_axis, -phi_h);
+	(*d) = normalize(rotate_vector(tmp, y_axis, -theta_h));
 }
 
-vec3 brdf::evalp(const dir& in, const dir& out) const
+void brdf::hd_to_io(const vec3& h, const vec3& d, vec3 *i, vec3 *o)
 {
-	return cos(in.theta) * eval(in, out);
+	const vec3 y_axis = vec3(0, 1, 0);
+	const vec3 z_axis = vec3(0, 0, 1);
+	float_t theta_h, phi_h;
+
+	xyz_to_theta_phi(h, &theta_h, &phi_h);
+	vec3 tmp = rotate_vector(d, y_axis, theta_h);
+	(*i) = normalize(rotate_vector(tmp, z_axis, phi_h));
+	(*o) = normalize(2.0 * dot((*i), h) * h - (*i));
 }
 
-vec3 brdf::evalp_hd(const dir& half, const dir& diff) const
+vec3 brdf::eval_hd(const vec3& h, const vec3& d, const void *user_param) const
 {
-	dir in, out;
-	half_diff_coords_to_std(half, diff, in, out);
+	vec3 i, o;
+	hd_to_io(h, d, &i, &o);
 
-	return cos(in.theta) * eval(in, out);
+	return eval(i, o, user_param);
+}
+
+vec3 brdf::evalp(const vec3& i, const vec3& o, const void *user_param) const
+{
+	return eval(i, o, user_param) * i.z;
+}
+
+vec3 brdf::evalp_hd(const vec3& h, const vec3& d, const void *user_param) const
+{
+	vec3 i, o;
+	hd_to_io(h, d, &i, &o);
+
+	return eval(i, o, user_param) * i.z;
 }
 
 vec3
-brdf::evalp_mc(const dir& out, double r1, double r2, dir *in, double *pdf) const
-{
-	const dir in_ = sample(out, r1, r2);
-	double pdf_ = this->pdf(out, in_);
-	if (in) (*in) = in_;
+brdf::evalp_is(
+	float_t u1, float_t u2,
+	const vec3& o, vec3 *i, float_t *pdf,
+	const void *user_param
+) const {
+	const vec3 i_ = sample(u1, u2, o, user_param);
+	float_t pdf_ = this->pdf(i_, o);
+	if (i) (*i) = i_;
 	if (pdf) (*pdf) = pdf_;
 
-	return (evalp(in_, out) / pdf_);
+	return (evalp(i_, o, user_param) / pdf_);
 }
 
-dir brdf::sample(const dir& out, double u1, double u2) const
+vec3
+brdf::sample(float_t u1, float_t u2, const vec3& o, const void *user_param) const
 {
-	double tmp = sqrt(u1 / (1.0 - u1));
-	double theta = atan(tmp);
-	double phi = u2 * 2.0 * M_PI;
+	float_t x, y, z;
 
-	return dir(theta, phi);
+	uniform_to_concentric(u1, u2, &x, &y);
+	z = sqrt(1.0 - x * x - y * y);
+	DJB_ASSERT(z >= 0.0);
+
+	return vec3(x, y, z);
 }
 
-double brdf::pdf(const dir& out, const dir& m) const
+float_t brdf::pdf(const vec3& i, const vec3& o, const void *user_param) const
 {
-	return cos(m.theta) / M_PI;
+	return /* cos(theta_i) */i.z / M_PI;
 }
 
+// *************************************************************************************************
+// Lambertian API implementation
+
+//---------------------------------------------------------------------------
+// Lambertian Params
+
+/* Constructors */
+lambert::params::params(const vec3& reflectance):
+	m_reflectance(reflectance)
+{}
+
+//---------------------------------------------------------------------------
+// Lambertian Evaluation
+vec3
+lambert::eval(const vec3& i, const vec3& o, const void *user_param) const
+{
+	const lambert::params params = 
+		user_param ? *reinterpret_cast<const lambert::params *>(user_param)
+		           : lambert::params();
+
+	return (params.m_reflectance / M_PI);
+}
 
 // *************************************************************************************************
 // MERL API implementation
@@ -764,12 +894,12 @@ double brdf::pdf(const dir& out, const dir& m) const
 // In:  [0 .. pi/2]
 // Out: [0 .. 89]
 static int 
-theta_half_index(double theta_half)
+theta_half_index(float_t theta_half)
 {
 	if (theta_half <= 0.0)
 		return 0;
-	double theta_half_deg = ((theta_half / (M_PI/2.0)) * MERL_SAMPLING_RES_THETA_H);
-	double temp = theta_half_deg * MERL_SAMPLING_RES_THETA_H;
+	float_t theta_half_deg = ((theta_half / (M_PI/2.0)) * MERL_SAMPLING_RES_THETA_H);
+	float_t temp = theta_half_deg * MERL_SAMPLING_RES_THETA_H;
 	temp = sqrt(temp);
 	int ret_val = (int)temp;
 	if (ret_val < 0)
@@ -784,7 +914,7 @@ theta_half_index(double theta_half)
 // In:  [0 .. pi/2]
 // Out: [0 .. 89]
 static int 
-theta_diff_index(double theta_diff)
+theta_diff_index(float_t theta_diff)
 {
 	int tmp = theta_diff / (M_PI * 0.5) * MERL_SAMPLING_RES_THETA_D;
 	if (tmp < 0)
@@ -798,7 +928,7 @@ theta_diff_index(double theta_diff)
 //---------------------------------------------------------------------------
 // Lookup phi_diff index
 static int
-phi_diff_index(double phi_diff)
+phi_diff_index(float_t phi_diff)
 {
 	// Because of reciprocity, the BRDF is unchanged under
 	// phi_diff -> phi_diff + M_PI
@@ -832,6 +962,8 @@ merl::merl(const char *filename)
 	// read header
 	f.read((char *)dims, /*bytes*/4 * 3);
 	n = dims[0] * dims[1] * dims[2];
+	if (n <= 0)
+		throw exc("djb_error: Failed to read MERL header\n");
 
 	// allocate brdf and read data
 	m_samples.resize(3 * n);
@@ -842,17 +974,20 @@ merl::merl(const char *filename)
 
 //---------------------------------------------------------------------------
 // look up the BRDF.
-vec3 merl::eval(const dir& in, const dir& out) const
+vec3 merl::eval(const vec3& i, const vec3& o, const void *user_param) const
 {
 	// convert to half / diff angle coordinates
-	dir half, diff;
-	std_coords_to_half_diff_coords(in, out, half, diff);
+	vec3 h, d;
+	float_t theta_h, phi_h, theta_d, phi_d;
+	io_to_hd(i, o, &h, &d);
+	xyz_to_theta_phi(h, &theta_h, &phi_h);
+	xyz_to_theta_phi(d, &theta_d, &phi_d);
 
 	// compute indexes
-	int idx_r = phi_diff_index(diff.phi)
-	          + theta_diff_index(diff.theta)
+	int idx_r = phi_diff_index(phi_d)
+	          + theta_diff_index(theta_d)
 	          * MERL_SAMPLING_RES_PHI_D / 2
-	          + theta_half_index(half.theta)
+	          + theta_half_index(theta_h)
 	          * MERL_SAMPLING_RES_PHI_D / 2
 	          * MERL_SAMPLING_RES_THETA_D;
 	int idx_g = idx_r + MERL_SAMPLING_RES_THETA_H
@@ -872,170 +1007,10 @@ vec3 merl::eval(const dir& in, const dir& out) const
 #ifndef NVERBOSE
 	DJB_LOG("djb_verbose: below horizon\n");
 #endif
-		return vec3(0, 0, 0);
+		return vec3(0);
 	}
 
 	return rgb;
-}
-
-// *************************************************************************************************
-// MIT 2005 API implementation (based on Addy Ngan's Matlab implementation)
-//---------------------------------------------------------------------------
-// MIT 2005 Contructor
-mit05::mit05(const char *filename)
-{
-	std::fstream f(filename, std::fstream::in | std::fstream::binary);
-	int32_t n, head[16];
-
-	// open file
-	if (!f.is_open())
-		throw exc("djb_error: Failed to open %s\n", filename);
-
-	// read header
-	f.read((char *)head, sizeof(head));
-	memcpy(m_dims, head, /*bytes*/sizeof(m_dims));
-	n = head[0] * head[1] * head[2] * head[3];
-	if (n < 1)
-		throw exc("djb_error: Invalid MIT05 dimensions\n");
-	if (head[9] == 1)
-		throw exc("djb_error: No support for halved data\n");
-
-	// allocate and read data
-	m_samples.resize(3 * n);
-	f.read((char *)&m_samples[0], /*bytes*/sizeof(float) * 3 * n);
-	if (f.fail())
-		throw exc("djb_error: Reading %s failed\n", filename);
-
-	// post process data
-	enforce_reciprocity();
-
-#ifndef NVERBOSE
-	DJB_LOG("djb_verbose: BRDF resolution %ix%ix%ix%i\n",
-	        m_dims[0], m_dims[1], m_dims[2], m_dims[3]);
-#endif
-}
-
-//---------------------------------------------------------------------------
-// look up the BRDF.
-vec3 mit05::eval(const dir& in, const dir& out) const
-{
-	// check that we're above horizon
-	if (in.theta > M_PI * 0.5 || out.theta > M_PI * 0.5)
-		return vec3(0, 0, 0);
-
-	int i1, i2, i3, i4;
-	int i_r, i_g, i_b;
-	dir2index(in, out, &i1, &i2, &i3, &i4);
-	rgbindex(i1, i2, i3, i4, &i_r, &i_g, &i_b);
-
-	// lookup data
-	vec3 rgb(m_samples[i_r], m_samples[i_g], m_samples[i_b]);
-	if (rgb.x < 0.0) rgb.x = 0.0;
-	if (rgb.y < 0.0) rgb.y = 0.0;
-	if (rgb.z < 0.0) rgb.z = 0.0;
-
-	return (1e2 * rgb);
-}
-
-//---------------------------------------------------------------------------
-// Indexing utilities
-void
-mit05::dir2index(
-	const dir& in, const dir& out, 
-	int *i1, int *i2, int *i3, int *i4
-) const {
-	// check angles
-	const double pi = 3.14159;
-	double phi_i = in.phi;
-	double phi_d = out.phi - in.phi;
-	while (phi_i < 0.0) {phi_i+= 2.0 * pi;}
-	while (phi_d < 0.0) {phi_d+= 2.0 * pi;}
-	while (phi_i > 2.0 * pi) {phi_i-= 2.0 * pi;}
-	while (phi_d > 2.0 * pi) {phi_d-= 2.0 * pi;}
-
-	// compute indexes
-	(*i1) = floor(min(1.0, in.theta * 2.0 / pi) * (m_dims[0] - 1) + 0.5);
-	(*i2) = floor(min(1.0, out.theta * 2.0 / pi) * (m_dims[1] - 1) + 0.5);
-	(*i3) = floor(min(1.0, phi_d * 0.5 / pi) * (m_dims[2] - 1) + 0.5);
-	(*i4) = floor(min(1.0, phi_i * 0.5 / pi) * (m_dims[3] - 1) + 0.5);
-}
-
-void
-mit05::index2dir(
-	int i1, int i2, int i3, int i4,
-	dir *in, dir *out
-) const {
-	const double pi = 3.14159;
-	double tmp1 = (double)i1 / (double)(m_dims[0] - 1);
-	double tmp2 = (double)i2 / (double)(m_dims[1] - 1);
-	double tmp3 = (double)i3 / (double)(m_dims[2] - 1);
-	double tmp4 = (double)i4 / (double)(m_dims[3] - 1);
-	double theta_i = tmp1 * 0.5 * pi;
-	double theta_o = tmp2 * 0.5 * pi;
-	double phi_d = tmp3 * 2.0 * pi;
-	double phi_i = tmp4 * 2.0 * pi;
-	double phi_o = phi_d + phi_i;
-	if (phi_o > 2.0 * pi) phi_o-= 2.0 * pi;
-	(*in) = dir(theta_i, phi_i);
-	(*out) = dir(theta_o, phi_o);
-}
-
-void
-mit05::rgbindex(
-	int i1, int i2, int i3, int i4,
-	int *r, int *g, int *b
-) const {
-	int tmp = m_dims[0] * m_dims[1]* m_dims[2] * m_dims[3];
-	(*r) = i4 + m_dims[3] * (i3 + m_dims[2] * (i2 + m_dims[1] * i1));
-	(*g) = (*r) + tmp;
-	(*b) = (*g) + tmp;
-}
-
-//---------------------------------------------------------------------------
-// Post process the BRDF to make sure it is reciproqual
-void mit05::enforce_reciprocity()
-{
-	DJB_ASSERT(m_dims[0] == m_dims[1]);
-#if 1
-	for (int i1 = 0; i1 < m_dims[0]; ++i1)
-	for (int i2 = 0; i2 < m_dims[1]; ++i2)
-	for (int i3 = 0; i3 < m_dims[2]; ++i3)
-	for (int i4 = 0; i4 < m_dims[3]; ++i4)
-	{
-		dir i, o;
-		index2dir(i1, i2, i3, i4, &i, &o);
-		int j1, j2, j3, j4;
-		dir2index(o, i, &j1, &j2, &j3, &j4);
-		DJB_ASSERT(i1 == j2);
-		int r1, g1, b1;
-		int r2, g2, b2;
-		rgbindex(i1, i2, i3, i4, &r1, &g1, &b1);
-		rgbindex(j1, j2, j3, j4, &r2, &g2, &b2);
-
-		// average data
-		double tmp1 = 0.5 * (m_samples[r1] + m_samples[r2]);
-		double tmp2 = 0.5 * (m_samples[g1] + m_samples[g2]);
-		double tmp3 = 0.5 * (m_samples[b1] + m_samples[b2]);
-		m_samples[r1] = m_samples[r2] = tmp1;
-		m_samples[g1] = m_samples[g2] = tmp2;
-		m_samples[b1] = m_samples[b2] = tmp3;
-
-#if 0 // debug index routines
-		{
-			int t1, t2, t3, t4;
-			dir2index(i, o, &t1, &t2, &t3, &t4);
-		//	printf("%i vs %i\n", i1, t1);
-		//	printf("%i vs %i\n", i2, t2);
-		//	printf("%i vs %i\n", i3, t3);
-		//	printf("%i vs %i\n\n", i4, t4);
-		//	DJB_ASSERT(i1 == t1);
-		//	DJB_ASSERT(i2 == t2);
-		//	DJB_ASSERT(i3 == t3);
-		//	DJB_ASSERT(i4 == t4);
-		}
-#endif
-	}
-#endif
 }
 
 // *************************************************************************************************
@@ -1075,13 +1050,13 @@ utia::utia(const char *filename)
 
 //---------------------------------------------------------------------------
 // Look up the UTIA BRDF
-vec3 utia::eval(const dir& in, const dir& out) const
+vec3 utia::eval(const vec3& i, const vec3& o, const void *user_param) const
 {
-	double r2d = 180.0 / M_PI;
-	double theta_i = r2d * in.theta;
-	double theta_o = r2d * out.theta;
-	double phi_i = r2d * in.phi;
-	double phi_o = r2d * out.phi;
+	float_t r2d = 180.0 / M_PI;
+	float_t theta_i = r2d * acos(i.z);
+	float_t theta_o = r2d * acos(o.z);
+	float_t phi_i = r2d * atan2(i.y, i.x);
+	float_t phi_o = r2d * atan2(o.y, o.x);
 
 	// make sure we're above horizon
 	if (theta_i >= 90.0 || theta_o >= 90.0)
@@ -1112,26 +1087,26 @@ vec3 utia::eval(const dir& in, const dir& out) const
 	ipv[0] = (int)floor(phi_o / DJB__UTIA_STEP_P);
 	ipv[1] = ipv[0] + 1;
 
-	double sum;
-	double wti[2], wtv[2], wpi[2], wpv[2];
-	wti[1] = theta_i - (double)(DJB__UTIA_STEP_T * iti[0]);
-	wti[0] = (double)(DJB__UTIA_STEP_T * iti[1]) - theta_i;
+	float_t sum;
+	float_t wti[2], wtv[2], wpi[2], wpv[2];
+	wti[1] = theta_i - (float_t)(DJB__UTIA_STEP_T * iti[0]);
+	wti[0] = (float_t)(DJB__UTIA_STEP_T * iti[1]) - theta_i;
 	sum = wti[0] + wti[1];
 	wti[0]/= sum;
 	wti[1]/= sum;
-	wtv[1] = theta_o - (double)(DJB__UTIA_STEP_T * itv[0]);
-	wtv[0] = (double)(DJB__UTIA_STEP_T * itv[1]) - theta_o;
+	wtv[1] = theta_o - (float_t)(DJB__UTIA_STEP_T * itv[0]);
+	wtv[0] = (float_t)(DJB__UTIA_STEP_T * itv[1]) - theta_o;
 	sum = wtv[0] + wtv[1];
 	wtv[0]/= sum;
 	wtv[1]/= sum;
 
-	wpi[1] = phi_i - (double)(DJB__UTIA_STEP_P * ipi[0]);
-	wpi[0] = (double)(DJB__UTIA_STEP_P * ipi[1]) - phi_i;
+	wpi[1] = phi_i - (float_t)(DJB__UTIA_STEP_P * ipi[0]);
+	wpi[0] = (float_t)(DJB__UTIA_STEP_P * ipi[1]) - phi_i;
 	sum = wpi[0] + wpi[1];
 	wpi[0]/= sum;
 	wpi[1]/= sum;
-	wpv[1] = phi_o - (double)(DJB__UTIA_STEP_P * ipv[0]);
-	wpv[0] = (double)(DJB__UTIA_STEP_P * ipv[1]) - phi_o;
+	wpv[1] = phi_o - (float_t)(DJB__UTIA_STEP_P * ipv[0]);
+	wpv[0] = (float_t)(DJB__UTIA_STEP_P * ipv[1]) - phi_o;
 	sum = wpv[0] + wpv[1];
 	wpv[0]/= sum;
 	wpv[1]/= sum;
@@ -1143,7 +1118,7 @@ vec3 utia::eval(const dir& in, const dir& out) const
 
 	int nc = DJB__UTIA_NPV * DJB__UTIA_NTV;
 	int nr = DJB__UTIA_NPI * DJB__UTIA_NTI;
-	double RGB[DJB__UTIA_PLANES];
+	float_t RGB[DJB__UTIA_PLANES];
 	for(int isp = 0; isp < DJB__UTIA_PLANES; ++isp) {
 		int i, j, k, l;
 
@@ -1152,14 +1127,18 @@ vec3 utia::eval(const dir& in, const dir& out) const
 		for(j = 0; j < 2; ++j)
 		for(k = 0; k < 2; ++k)
 		for(l = 0; l < 2; ++l) {
-			double w = wti[i] * wtv[j] * wpi[k] * wpv[l];
+			float_t w = wti[i] * wtv[j] * wpi[k] * wpv[l];
 			int idx = isp * nr * nc + nc * (DJB__UTIA_NPI * iti[i] + ipi[k]) 
 			        + DJB__UTIA_NPV * itv[j] + ipv[l];
 
-			RGB[isp]+= w * m_samples[idx];
+			RGB[isp]+= w * (float_t)m_samples[idx];
 		}
 	}
-	return vec3(max(0.0, RGB[0]), max(0.0, RGB[1]), max(0.0, RGB[2]));
+	return vec3(
+		max((float_t)0, RGB[0]),
+		max((float_t)0, RGB[1]),
+		max((float_t)0, RGB[2])
+	);
 }
 
 //---------------------------------------------------------------------------
@@ -1170,8 +1149,8 @@ void utia::normalize()
 {
 	int xres = 90;
 	int yres = 360;
-	double dtheta = M_PI * 0.5 / (double)xres;
-	double dphi = 2.0 * M_PI / (double)yres;
+	float_t dtheta = M_PI * 0.5 / (float_t)xres;
+	float_t dphi = 2.0 * M_PI / (float_t)yres;
 	djb::vec3 nint(0);
 
 	// clamp to zero
@@ -1186,19 +1165,19 @@ void utia::normalize()
 	// scale
 	for (int i = 0; i < xres; ++i)
 	for (int j = 0; j < yres; ++j) {
-		double tmp1 = (double)i / (double)xres;
-		double tmp2 = (double)j / (double)yres;
-		double theta = tmp1 * M_PI * 0.5;
-		double phi = tmp2 * 2.0 * M_PI;
-		dir o(0, 0);
-		dir i(theta, phi);
+		float_t tmp1 = (float_t)i / (float_t)xres;
+		float_t tmp2 = (float_t)j / (float_t)yres;
+		float_t theta = tmp1 * M_PI * 0.5;
+		float_t phi = tmp2 * 2.0 * M_PI;
+		vec3 o(0, 0);
+		vec3 i(theta, phi);
 		nint+= eval(i, o) * cos(theta) * sin(theta);
 	}
 	nint*= dtheta * dphi;
 
-	double mag = max3(nint.x, nint.y, nint.z) * /* magic cst */7.0;
+	float_t mag = max3(nint.x, nint.y, nint.z) * /* magic cst */7.0;
 	if (mag > 1.0) {
-		double k = 1.0 / mag;
+		float_t k = 1.0 / mag;
 		for (int i = 0; i < (int)m_samples.size(); ++i)
 			m_samples[i]*= k;
 
@@ -1211,14 +1190,14 @@ void utia::normalize()
 // *************************************************************************************************
 // Private Spline API
 template <typename T>
-static T spline_eval(const std::vector<T>& points, double x)
+static T spline_eval(const std::vector<T>& points, float_t x)
 {
-	x = min(1.0, max(0.0, x)) * (points.size() - 1); // clamp to edge
-	double s1 = floor(x);
-	double s2 = min(double(points.size() - 1), ceil(x));
+	x = min((float_t)1.0, max((float_t)0.0, x)) * (points.size() - 1); // clamp to edge
+	float_t s1 = floor(x);
+	float_t s2 = min(float_t(points.size() - 1), (float_t)ceil(x));
 	const T& t1 = points[(int)s1];
 	const T& t2 = points[(int)s2];
-	double a = x - s1;
+	float_t a = x - s1;
 
 	return (1.0 - a) * t1 + a * t2;
 }
@@ -1229,22 +1208,23 @@ spline2d_eval(
 	const std::vector<T>& points,
 	int w,
 	int h,
-	double x,
-	double y
+	float_t x,
+	float_t y
 ) {
-	double yabs = fabs(y);
-	x = min(1.0, max(0.0, x)) * (w - 1); // clamp to edge
-	y = (yabs - floor(yabs)) * (h - 1);  // repeat
+	x = min((float_t)1.0, max((float_t)0.0, x)) * (w - 1); // clamp to edge
+	while (y < 0.0) y+= 1.0;
+	while (y >= 1.0) y-= 1.0;
+	y*= (h - 1);  // repeat
 
 	// texcoords
-	double x1 = floor(x);
-	double x2 = min(x1 + 1.0, (double)(w-1));
-	double y1 = floor(y);
-	double y2 = min(y1 + 1.0, (double)(h-1));
+	float_t x1 = floor(x);
+	float_t x2 = min(x1 + (float_t)1.0, (float_t)(w-1));
+	float_t y1 = floor(y);
+	float_t y2 = min(y1 + (float_t)1.0, (float_t)(h-1));
 
 	// lerp coeffs
-	double a1 = (double)x - x1;
-	double a2 = (double)y - y1;
+	float_t a1 = (float_t)x - x1;
+	float_t a2 = (float_t)y - y1;
 	DJB_ASSERT(a1 >= 0.0 && a1 <= 1.0);
 	DJB_ASSERT(a2 >= 0.0 && a2 <= 1.0);
 
@@ -1255,8 +1235,8 @@ spline2d_eval(
 	const T& p4 = points[(int)x2 + w * (int)y2];
 
 	// return bilinear interpolation
-	double tmp1 = (1.0 - a1) * p1 + a1 * p2;
-	double tmp2 = (1.0 - a1) * p3 + a1 * p4;
+	float_t tmp1 = (1.0 - a1) * p1 + a1 * p2;
+	float_t tmp2 = (1.0 - a1) * p3 + a1 * p4;
 	return ((1.0 - a2) * tmp1 + a2 * tmp2);
 }
 
@@ -1264,53 +1244,93 @@ spline2d_eval(
 // Fresnel API implementation
 namespace fresnel {
 
-static double unpolarized__eval(double cos_theta, double ior)
+void ior_to_f0(float_t ior, float_t *f0)
 {
-	double c = cos_theta;
-	double n = ior;
-	double g = sqrt(n * n + c * c - 1.0);
-	double tmp1 = c * (g + c) - 1.0;
-	double tmp2 = c * (g - c) + 1.0;
-	double tmp3 = (tmp1 * tmp1) / (tmp2 * tmp2);
-	double tmp4 = ((g - c) * (g - c)) / ((g + c) * (g + c));
+	DJB_ASSERT(ior > 0.0 && "Invalid ior");
+	DJB_ASSERT(f0 && "Null output ptr");
+	float_t tmp = (ior - 1.0) / (ior + 1.0);
+
+	(*f0) = tmp * tmp;
+}
+
+void ior_to_f0(const vec3& ior, vec3 *f0)
+{
+	DJB_ASSERT(f0 && "Null output ptr");
+	ior_to_f0(ior.x, &f0->x);
+	ior_to_f0(ior.y, &f0->y);
+	ior_to_f0(ior.z, &f0->z);
+}
+
+void f0_to_ior(float_t f0, float_t *ior)
+{
+	DJB_ASSERT(ior && "Null output ptr");
+	if (f0 == 1.0) {
+		(*ior) = 1.0;
+	} else {
+		float_t sqrt_f0 = sqrt(f0);
+
+		(*ior) = (1.0 + sqrt_f0) / (1.0 - sqrt_f0);
+	}
+}
+
+void f0_to_ior(const vec3& f0, vec3 *ior)
+{
+	DJB_ASSERT(ior && "Null output ptr");
+	f0_to_ior(f0.x, &ior->x);
+	f0_to_ior(f0.y, &ior->y);
+	f0_to_ior(f0.z, &ior->z);
+}
+
+static float_t unpolarized__eval(float_t cos_theta_d, float_t ior)
+{
+	float_t c = cos_theta_d;
+	float_t n = ior;
+	float_t g = sqrt(n * n + c * c - 1.0);
+	float_t tmp1 = c * (g + c) - 1.0;
+	float_t tmp2 = c * (g - c) + 1.0;
+	float_t tmp3 = (tmp1 * tmp1) / (tmp2 * tmp2);
+	float_t tmp4 = ((g - c) * (g - c)) / ((g + c) * (g + c));
 
 	return ((0.5 * tmp4) * (1.0 + tmp3));
 }
 
-vec3 unpolarized::eval(double theta) const
+vec3 unpolarized::eval(float_t cos_theta_d) const
 {
-	DJB_ASSERT(theta >= 0 && theta <= M_PI * 0.5 && "Invalid Angle");
-	double cos_theta = cos(theta);
-	double F[3];
+	DJB_ASSERT(cos_theta_d >= 0.f && cos_theta_d <= 1.0 && "Invalid Angle");
+	float_t F[3];
 
 	for (int i = 0; i < 3; ++i)
-		F[i] = unpolarized__eval(cos_theta, vec3::to_raw(ior)[i]);
+		F[i] = unpolarized__eval(cos_theta_d, vec3::to_raw(ior)[i]);
 
 	return vec3::from_raw(F);
 }
 
-vec3 schlick::eval(double theta) const
+schlick::schlick(const vec3& f0): f0(f0)
 {
-	DJB_ASSERT(theta >= 0 && theta <= M_PI * 0.5 && "Invalid Angle");
-	double c1 = 1.0 - cos(theta);
-	double c2 = c1 * c1;
-	double c5 = c2 * c2 * c1;
+}
+
+vec3 schlick::eval(float_t cos_theta_d) const
+{
+	DJB_ASSERT(cos_theta_d >= 0.f && cos_theta_d <= 1.0 && "Invalid Angle");
+	float_t c1 = 1.0 - cos_theta_d;
+	float_t c2 = c1 * c1;
+	float_t c5 = c2 * c2 * c1;
 
 	return f0 + c5 * (vec3(1) - f0);
 };
 
-vec3 sgd::eval(double theta) const
+vec3 sgd::eval(float_t cos_theta_d) const
 {
-	DJB_ASSERT(theta >= 0 && theta <= M_PI * 0.5 && "Invalid Angle");
-	double c = cos(theta);
+	DJB_ASSERT(cos_theta_d >= 0.f && cos_theta_d <= 1.0 && "Invalid Angle");
+	float_t c = cos_theta_d;
 
 	return f0 - c * f1 + pow(1.0 - c, 5.0) * (vec3(1) - f0);
 };
 
-vec3 spline::eval(double theta) const
+vec3 spline::eval(float_t cos_theta_d) const
 {
-	DJB_ASSERT(theta >= 0 && theta <= M_PI * 0.5 && "Invalid Angle");
-	return spline_eval(m_points, theta * 2.0 / M_PI);
+	DJB_ASSERT(cos_theta_d >= 0.f && cos_theta_d <= 1.0 && "Invalid Angle");
+	return spline_eval(m_points, 2.0 * acos(cos_theta_d) / M_PI);
 }
 
 } // namespace fresnel
@@ -1320,815 +1340,902 @@ vec3 spline::eval(double theta) const
 
 // -------------------------------------------------------------------------------------------------
 /**
- * Compute the covariance matrix associated to the parameters of an ellipse
- *
- * The matrix is {{m11, m12}, {m12, m22}}
+ * Compute the PDF parameters associated to the parameters of an ellipse
  */
 static void
-ellipse_to_covariance(
-	double r1, double r2, double angle,
-	double *m11, double *m22, double *m12
+ellipse_to_pdfparams(
+	float_t a1, float_t a2, float_t phi_a,
+	float_t *ax, float_t *ay, float_t *rho
 ) {
-	double cosAngle = cos(angle);
-	double sinAngle = sin(angle);
-	double r1Sqr = r1 * r1;
-	double r2Sqr = r2 * r2;
-	double M[3]; // inverse cov matrix
-	double mdet; // inverse cov matrix determinant
+	float_t cos_phi_a = cos(phi_a);
+	float_t sin_phi_a = sin(phi_a);
+	float_t cos_2phi_a = 2.0 * cos_phi_a * cos_phi_a - 1.0f; // cos(2x) = 2cos(x)^2 - 1
+	float_t a1_sqr = a1 * a1;
+	float_t a2_sqr = a2 * a2;
+	float_t tmp1 = a1_sqr + a2_sqr;
+	float_t tmp2 = a1_sqr - a2_sqr;
 
-	// compute the inverse of the covariance matrix from 
-	// the parameters of the ellipse
-	M[0] = cosAngle*cosAngle/r1Sqr + sinAngle*sinAngle/r2Sqr;
-	M[1] = sinAngle*sinAngle/r1Sqr + cosAngle*cosAngle/r2Sqr;
-	M[2] = cosAngle*sinAngle*(1.0/r1Sqr - 1.0/r2Sqr); // inverse covariance term
-	mdet = M[0] * M[1] - M[2] * M[2]; // determinant for inversion
-
-	// produce output from the terms of the inverse of M
-	(*m11) = M[1] / mdet;  // Var(X)
-	(*m22) = M[0] / mdet;  // Var(Y)
-	(*m12) =-M[2] / mdet;  // Cov(X,Y)
+	(*ax) = sqrt(0.5 * (tmp1 + tmp2 * cos_2phi_a));
+	(*ay) = sqrt(0.5 * (tmp1 - tmp2 * cos_2phi_a));
+	(*rho) = (a2_sqr - a1_sqr) * cos_phi_a * sin_phi_a / ((*ax) * (*ay));
 }
 
 
 // -------------------------------------------------------------------------------------------------
 /**
- * Compute the roughness parameters associated a covariance matrix
- *
- * The matrix is {{m11, m12}, {m12, m22}}
+ * Compute the ellipse parameters associated to the parameters of the PDF
  */
 static void
-covariance_to_ellipse(
-	double m11, double m22, double m12,
-	double *r1, double *r2, double *angle
+pdfparams_to_ellipse(
+	float_t ax, float_t ay, float_t rho,
+	float_t *a1, float_t *a2, float_t *phi_a
 ) {
-	if (m12 == 0.0) {
-		(*r1) = sqrt(m11);
-		(*r2) = sqrt(m22);
-		(*angle) = 0.0;
-	} else {
-		double tmp1 = m11 - m22;
-		double tmp2 = sqrt(tmp1 * tmp1 + 4.0 * m12 * m12);
-		double tmp3 = (m11 - m22 - tmp2) / (m12 * 2.0);
-		(*r1) = sqrt(0.5 * (m11 + m22 - tmp2));
-		(*r2) = sqrt(0.5 * (m11 + m22 + tmp2));
-		(*angle) = atan2(1.0, tmp3);
-	}
+	float_t ax_sqr = ax * ax;
+	float_t ay_sqr = ay * ay;
+	float_t cov = rho * ax * ay * /*saves 1 mul*/2.0;
+	float_t tmp1 = ax_sqr + ay_sqr;
+	float_t tmp2 = ax_sqr - ay_sqr;
+	float_t tmp3 = sqrt(tmp2 * tmp2 + cov * cov);
+
+	(*a1) = sqrt(0.5 * (tmp1 + tmp3));
+	(*a2) = sqrt(0.5 * (tmp1 - tmp3));
+	(*phi_a) = (cov != 0.0) ? atan((ax_sqr - ay_sqr - tmp3) / cov) : 0.0;
 }
 
+//---------------------------------------------------------------------------
+// Microfacet Params
+
+/* Constructors */
+microfacet::params::params(float_t a1, float_t a2, float_t phi_a)
+{
+	set_ellipse(a1, a2, phi_a);
+	set_location(0, 0);
+}
+
+microfacet::params::params(
+	float_t ax, float_t ay, float_t rho, float_t tx_n, float_t ty_n
+) {
+	set_pdfparams(ax, ay, rho, tx_n, ty_n);
+}
+
+/* Factories */
+microfacet::params microfacet::params::standard()
+{
+	return microfacet::params::isotropic(1);
+}
+
+microfacet::params microfacet::params::isotropic(float_t a)
+{
+	return microfacet::params::elliptic(a, a, 0);
+}
+
+microfacet::params
+microfacet::params::elliptic(float_t a1, float_t a2, float_t phi_a)
+{
+	return microfacet::params(a1, a2, phi_a);
+}
+
+microfacet::params
+microfacet::params::pdfparams(
+	float_t ax, float_t ay, float_t rho,
+	float_t tx_n, float_t ty_n
+) {
+	return microfacet::params(ax, ay, rho, tx_n, ty_n);
+}
+
+/* Mutators */
+void microfacet::params::set_location(float_t tx_n, float_t ty_n)
+{
+	m_tx_n = tx_n;
+	m_ty_n = ty_n;
+	m_n = normalize(vec3(-tx_n, -ty_n, 1));
+}
+
+void microfacet::params::set_location(const vec3& n)
+{
+	m_n = n;
+	m_tx_n = -n.x / n.z;
+	m_ty_n = -n.y / n.z;
+}
+
+void microfacet::params::set_ellipse(float_t a1, float_t a2, float_t phi_a)
+{
+	DJB_ASSERT(a1 > 0.0 && a2 > 0.0 && "Invalid ellipse radii");
+	m_a1 = a1;
+	m_a2 = a2;
+	m_phi_a = phi_a;
+	ellipse_to_pdfparams(a1, a2, phi_a, &m_ax, &m_ay, &m_rho);
+	m_sqrt_one_minus_rho_sqr = sqrt(1.0 - m_rho * m_rho);
+}
+
+void
+microfacet::params::set_pdfparams(
+	float_t ax, float_t ay, float_t rho,
+	float_t tx_n, float_t ty_n
+) {
+	DJB_ASSERT(ax > 0.0 && ay > 0.0 && "Invalid scale parameters");
+	DJB_ASSERT(fabs(rho) < 1.0 && "Invalid correlation parameter");
+	m_ax = ax;
+	m_ay = ay;
+	m_rho = rho;
+	m_sqrt_one_minus_rho_sqr = sqrt(1.0 - rho * rho);
+	pdfparams_to_ellipse(ax, ay, rho, &m_a1, &m_a2, &m_phi_a);
+	set_location(tx_n, ty_n);
+}
+
+/* Accessors */
+void microfacet::params::get_location(float_t *tx_n, float_t *ty_n) const
+{
+	if (tx_n) (*tx_n) = m_tx_n;
+	if (ty_n) (*ty_n) = m_ty_n;
+}
+
+void microfacet::params::get_location(vec3 *n) const
+{
+	if (n) (*n) = m_n;
+}
+
+void
+microfacet::params::get_ellipse(float_t *a1, float_t *a2, float_t *phi_a) const
+{
+	if (a1) (*a1) = m_a1;
+	if (a2) (*a2) = m_a2;
+	if (phi_a) (*phi_a) = m_phi_a;
+}
+
+void
+microfacet::params::get_pdfparams(
+	float_t *ax, float_t *ay, float_t *rho,
+	float_t *tx_n, float_t *ty_n
+) const {
+	if (ax) (*ax) = m_ax;
+	if (ay) (*ay) = m_ay;
+	if (rho) (*rho) = m_rho;
+	if (tx_n) (*tx_n) = m_tx_n;
+	if (ty_n) (*ty_n) = m_ty_n;
+}
 
 //---------------------------------------------------------------------------
 // Facet Ctor
 microfacet::microfacet(
-	int gaf,
-	double r1, double r2, double rangle, 
-	const fresnel::impl& f,
+	const fresnel::impl& fresnel,
 	bool shadow
 ):
-	m_fresnel(f.copy()),
-	m_r1(r1), m_r2(r2), m_rangle(rangle),
-	m_m11(1), m_m22(1), m_m12(0),
-	m_sigma1(1), m_sigma2(1),
-	m_rho(0), m_sqrt_one_minus_rho_sqr(0),
-	m_gaf(gaf), m_shadow(shadow)
+	m_fresnel(fresnel.copy()), m_shadow(shadow)
 {
-	set_gaf(gaf);
-	set_roughness(r1, r2, rangle);
-}
-
-microfacet::microfacet(int gaf, double r, const fresnel::impl& f, bool shadow):
-	m_fresnel(f.copy()),
-	m_r1(r), m_r2(r), m_rangle(0),
-	m_m11(1), m_m22(1), m_m12(0),
-	m_sigma1(1), m_sigma2(1),
-	m_rho(0), m_sqrt_one_minus_rho_sqr(0),
-	m_gaf(gaf), m_shadow(shadow)
-{
-	set_gaf(gaf);
-	set_roughness(r);
-}
-
-//---------------------------------------------------------------------------
-// Accessors
-void microfacet::get_covariance(double *var1, double *var2, double *cov) const
-{
-	if (var1) (*var1) = m_m11;
-	if (var2) (*var2) = m_m22;
-	if (cov)  (*cov)  = m_m12;
-}
-
-void microfacet::get_roughness(double *r1, double *r2, double *rangle) const
-{
-	if (r1) (*r1) = m_r1;
-	if (r2) (*r2) = m_r2;
-	if (rangle) (*rangle) = m_rangle;
+	
 }
 
 //---------------------------------------------------------------------------
 // Mutators
-void microfacet::set_gaf(int gaf)
-{
-	if (gaf == GAF_NONE || gaf == GAF_VGROOVE || gaf == GAF_SMITH) {
-		m_gaf = gaf;
-	} else {
-		throw exc("djb_error: Invalid GAF\n");
-	}
-}
-
 void microfacet::set_fresnel(const fresnel::impl& f)
 {
 	delete m_fresnel;
 	m_fresnel = f.copy();
 }
 
-void microfacet::set_roughness(double r1, double r2, double rangle)
+//---------------------------------------------------------------------------
+// Evaluate f_r * cos
+vec3
+microfacet::evalp(const vec3& i, const vec3& o, const void *user_param) const
 {
-	DJB_ASSERT(r1 > 0 && r2 > 0);
-	m_r1 = r1;
-	m_r2 = r2;
-	m_rangle = rangle;
-	ellipse_to_covariance(m_r1, m_r2, m_rangle, &m_m11, &m_m22, &m_m12);
-	m_det = m_m11 * m_m22 - m_m12 * m_m12;
-	m_sigma1 = sqrt(m_m11);
-	m_sigma2 = sqrt(m_m22);
-	m_rho = m_m12 / (m_sigma1 * m_sigma2);
-	DJB_ASSERT(m_rho < 1.0 && m_rho > -1.0);
-	m_sqrt_one_minus_rho_sqr = sqrt(1.0 - m_rho * m_rho);
+	const microfacet::params params = 
+		user_param ? *reinterpret_cast<const microfacet::params *>(user_param)
+		           : microfacet::params::standard();
+
+	vec3 h = normalize(i + o);
+	float_t G = gaf(h, i, o, params);
+
+	if (G > 0.0) {
+		float_t cos_theta_d = sat(dot(o, h));
+		vec3 F = fresnel(cos_theta_d);
+		float_t D = ndf(h, params);
+
+		return (F * ((D * G) / (4.0 * o.z)));
+	}
+	return vec3(0);
 }
 
 //---------------------------------------------------------------------------
-// Normal Mapped Microfacet GAF
-double microfacet::gaf_nmap(const dir& i, const dir& o, const dir& h) const
+// Evaluate f_r
+vec3
+microfacet::eval(const vec3& i, const vec3& o, const void *user_param) const
 {
-	double cos_theta_h = cos(h.theta);
-	double cos_theta_o = cos(o.theta);
-	double cos_theta_d = cos_theta_h * cos_theta_o
-	                   + cos(h.phi - o.phi) * sin(h.theta) * sin(o.theta);
-	double masking = cos_theta_o * fabs(cos_theta_h / cos_theta_d);
-
-	if (m_shadow) {
-		double shadowing = i.theta < M_PI * 0.5 ? 1.0 : 0.0;
-
-		return masking * shadowing;
-	}
-
-	return masking;
-}
-
-//---------------------------------------------------------------------------
-// V Grooved Microfacet GAF
-double microfacet::gaf_vgroove(const dir& i, const dir& o, const dir& h) const
-{
-	if (h.theta < 0.5 * M_PI && o.theta < 0.5 * M_PI) {
-		double cos_theta_h = cos(h.theta);
-		double sin_theta_h = sin(h.theta);
-		double cos_theta_o = cos(o.theta);
-		double cos_theta_d = cos_theta_h * cos_theta_o
-		                   + cos(h.phi - o.phi) * sin_theta_h 
-		                   * sin(o.theta);
-		double tmp = 2.0 * cos_theta_o * cos_theta_h / cos_theta_d;
-		double masking = min(1.0, tmp);
-
-		if (m_shadow) {
-			if (i.theta < 0.5 * M_PI) {
-				double cos_theta_i = cos(i.theta);
-				double cos_theta_d = cos_theta_h * cos_theta_i
-				                   + cos(h.phi - i.phi) * sin_theta_h
-				                   * sin(i.theta);
-
-				double tmp = 2.0 * cos_theta_i * cos_theta_h / cos_theta_d;
-				double masking_and_shadowing = min(masking, tmp);
-
-				return masking_and_shadowing;
-			}
-
-			return 0.0; // below horizon
-		}
-
-		return masking;
-	}
-
-	return 0.0; // below horizon
-}
-
-//---------------------------------------------------------------------------
-// Smith Height Correlated Microfacet GAF
-double microfacet::gaf_smith(const dir& i, const dir& o, const dir& h) const
-{
-	double g1_o = g1(o);
-
-	if (m_shadow) {
-		double g1_i = g1(i);
-		double tmp = g1_i * g1_o;
-
-		if (tmp > 0.0)
-			return (tmp / (g1_i + g1_o - tmp));
-
-		return 0.0; // fully shadowed
-	}
-
-	return g1_o;
-}
-
-//---------------------------------------------------------------------------
-// Microfacet GAF
-double microfacet::gaf(const dir& i, const dir& o, const dir& h) const
-{
-	switch (m_gaf) {
-		case GAF_NONE: return gaf_nmap(i, o, h);
-		case GAF_VGROOVE: return gaf_vgroove(i, o, h);
-		case GAF_SMITH: return gaf_smith(i, o, h);
-		default: abort(); // should never happen
-	}
+	return (evalp(i, o, user_param) / i.z);
 }
 
 //---------------------------------------------------------------------------
 // Microfacet NDF
-double microfacet::ndf(const dir& h) const
+float_t microfacet::ndf(const vec3& h, const microfacet::params& params) const
 {
-	return (p22(h) / pow(cos(h.theta), 4.0));
+	if (h.z > DJB_EPSILON) {
+		float_t cos_theta_h_sqr = h.z * h.z;
+		float_t cos_theta_h_sqr_sqr = cos_theta_h_sqr * cos_theta_h_sqr;
+		float_t xslope = -h.x / h.z;
+		float_t yslope = -h.y / h.z;
+
+		return (p22(xslope, yslope, params) / cos_theta_h_sqr_sqr);
+	}
+	return 0.0;
 }
 
 //---------------------------------------------------------------------------
-// Evaluate Projected Microfacet BRDF
-vec3 microfacet::evalp(const dir& i, const dir& o) const
+// Microfacet Slope PDF
+float_t microfacet::p22(float_t x, float_t y, const params& params) const
 {
-	dir h, d;
-	std_coords_to_half_diff_coords(i, o, h, d);
+	x-= params.m_tx_n;
+	y-= params.m_ty_n;
 
-	vec3 F = eval_fresnel(d.theta);
-	double D = ndf(h);
-	double G = gaf(i, o, h);
+	float_t nrm = params.m_ax * params.m_ay * params.m_sqrt_one_minus_rho_sqr;
+	float_t x_ = x / params.m_ax;
+	float_t tmp1 = params.m_ax * y - params.m_rho * params.m_ay * x;
+	float_t tmp2 = params.m_ax * params.m_ay
+	             * params.m_sqrt_one_minus_rho_sqr;
+	float_t y_ = tmp1 / tmp2;
 
-	return (F * D * G) / (4.0 * cos(o.theta));
+	return (p22_std(x_, y_) / nrm);
 }
 
 //---------------------------------------------------------------------------
-// Evaluate Microfacet BRDF
-vec3 microfacet::eval(const dir& i, const dir& o) const
+// Microfacet Visible Slope PDF
+float_t
+microfacet::vp22(float_t x, float_t y, const vec3& k, const params& params) const
 {
-	vec3 fr_p = evalp(i, o);
-	return fr_p / cos(i.theta);
+	vec3 h = normalize(vec3(-x, -y, 1));
+	float_t jacobian = h.z * h.z * h.z; // solid angles to slope space jacobian
+
+	return jacobian * vndf(h, k, params);
 }
 
 //---------------------------------------------------------------------------
-// Set covariance terms
-void microfacet::set_covariance(double m11, double m22, double m12)
+// Microfacet VNDF
+float_t
+microfacet::vndf(
+	const vec3& h, const vec3& k,
+	const microfacet::params& params
+) const {
+	float_t kh = dot(k, h);
+
+	if (kh > 0.0) {
+		float_t D = ndf(h, params);
+
+		return (kh * D / sigma(k, params));
+	}
+	return 0.0;
+}
+
+//---------------------------------------------------------------------------
+// Smith Height Correlated Microfacet GAF
+float_t
+microfacet::sigma(
+	const vec3& k,
+	const microfacet::params& params
+) const {
+	// warp the incident direction
+	float_t a = k.x * params.m_ax + k.y * params.m_ay * params.m_rho;
+	float_t b = k.y * params.m_ay * params.m_sqrt_one_minus_rho_sqr;
+	float_t c = k.z - k.x * params.m_tx_n - k.y * params.m_ty_n;
+	float_t nrm = sqrt(a * a + b * b + c * c);
+
+	return nrm * sigma_std(vec3(a, b, c) / nrm);
+}
+
+float_t
+microfacet::g1(
+	const vec3& h, const vec3& k,
+	const microfacet::params& params
+) const {
+	float_t g1_local_test = dot(k, params.m_n);
+	if (g1_local_test > 0.0)
+		return k.z / sigma(k);
+	return 0.0;
+}
+
+float_t
+microfacet::gaf(
+	const vec3& h, const vec3& i, const vec3& o,
+	const microfacet::params& params
+) const {
+	float_t G1_o = g1(h, o, params);
+
+	if (m_shadow) {
+		float_t G1_i = g1(h, i, params);
+		float_t tmp = G1_i * G1_o;
+#if 1 // height correlated smith
+		if (tmp > 0.0)
+			return (tmp / (G1_i + G1_o - tmp));
+
+		return 0.0; // fully attenuated
+#else // separable form
+		return tmp;
+#endif
+	}
+
+	return G1_o;
+}
+
+//---------------------------------------------------------------------------
+// Importance Sample f_r * cos Using Two Uniform Numbers
+vec3
+microfacet::sample(
+	float_t u1, float_t u2,
+	const vec3& o,
+	const void *user_param
+) const {
+	// get params
+	const microfacet::params params = 
+		user_param ? *reinterpret_cast<const microfacet::params *>(user_param)
+		           : microfacet::params::standard();
+
+#if 1 // clamp samples
+	u1 = sat(u1) * (float_t)0.99998 + (float_t)0.00001;
+	u2 = sat(u2) * (float_t)0.99998 + (float_t)0.00001;
+#endif
+
+	// warp the receiver direction
+	float_t a = o.x * params.m_ax + o.y * params.m_ay * params.m_rho;
+	float_t b = o.y * params.m_ay * params.m_sqrt_one_minus_rho_sqr;
+	float_t c = o.z - o.x * params.m_tx_n - o.y * params.m_ty_n;
+	djb::vec3 o_std = normalize(vec3(a, b, c));
+
+	if (o_std.z > 0.0) {
+		// create a standard variate
+		float_t tx_m, ty_m;
+		sample_vp22_std_smith(u1, u2, o_std, &tx_m, &ty_m);
+
+		// warp the variate with the microfacet parameters
+		float_t tx_h = params.m_ax * tx_m + params.m_tx_n;
+		float_t choleski = params.m_rho * tx_m
+			             + params.m_sqrt_one_minus_rho_sqr * ty_m;
+		float_t ty_h = params.m_ay * choleski + params.m_ty_n;
+
+		// get the associated normal
+		vec3 h = normalize(vec3(-tx_h, -ty_h, 1));
+
+		// return the reflected direction around the micronormal
+		return (2.0 * dot(o, h) * h - o);
+	}
+	return vec3(0, 0, 1);
+}
+
+//---------------------------------------------------------------------------
+// Evaluate the PDF of a Sample
+float_t
+microfacet::pdf(const vec3& i, const vec3& o, const void *user_param) const
 {
-	DJB_ASSERT(m11 > 0 && m22 > 0 && "Invalid Variance\n");
-	DJB_ASSERT(m11 * m22 - m12 * m12 > 0 && "Invalid Cov Determinant\n");
-	double r1, r2, rangle;
-	covariance_to_ellipse(m11, m22, m12, &r1, &r2, &rangle);
-	set_roughness(r1, r2, rangle);
+	const microfacet::params params = 
+		user_param ? *reinterpret_cast<const microfacet::params *>(user_param)
+		           : microfacet::params::standard();
+	vec3 h = normalize(i + o);
+	float_t G = gaf(h, i, o, params);
+
+	if (G > 0.0) {
+		if (!supports_smith_vndf_sampling()) {
+			return (h.z * ndf(h, params) / (4.0 * dot(i, h)));
+		} else {
+			return (vndf(h, o, params) / (4.0 * dot(i, h)));
+		}
+	}
+	return 0.0;
+}
+
+//---------------------------------------------------------------------------
+// Evaluate f_r * cos / PDF
+vec3
+microfacet::evalp_is(
+	float_t u1, float_t u2,
+	const vec3& o,
+	vec3 *i, float_t *pdf,
+	const void *user_param
+) const {
+	const microfacet::params params = 
+		user_param ? *reinterpret_cast<const microfacet::params *>(user_param)
+		           : microfacet::params::standard();
+	vec3 i_ = sample(u1, u2, o, user_param);
+	vec3 h = normalize(i_ + o);
+	float_t G = gaf(h, i_, o, params);
+	if (pdf) (*pdf) = 0.f;
+
+	if (G > 0.0) {
+		float_t cos_theta_d = sat(dot(o, h));
+
+		if (i) (*i) = i_;
+		if (!supports_smith_vndf_sampling()) {
+			float_t pdf_ = (h.z * ndf(h, params) / (4.0 * cos_theta_d));
+			if (pdf) (*pdf) = pdf_;
+			return evalp(i_, o, user_param) / pdf_;
+		} else {
+			vec3 F = fresnel(cos_theta_d);
+			float_t G1 = g1(h, o, params);
+			if (pdf) (*pdf) = (vndf(h, o, params) / (4.0 * cos_theta_d));
+			return (F * (G / G1));
+		}
+	}
+	return vec3(0);
+}
+
+//---------------------------------------------------------------------------
+// Importance Sample a Smith VNDF
+void
+microfacet::sample_vp22_std_smith(
+	float_t u1, float_t u2,
+	const vec3& o,
+	float_t *xslope, float_t *yslope
+) const {
+	if (supports_smith_vndf_sampling()) {
+		(*xslope) = qf2(u1, o);
+		(*yslope) = qf3(u2, o, *xslope);
+	} else {
+		sample_vp22_std_nmap(u1, u2, o, xslope, yslope);
+	}
+}
+
+float_t microfacet::qf2(float_t u, const vec3& k) const 
+{
+	throw exc("djb_error: Not Implemented");
+}
+
+float_t microfacet::qf3(float_t u, const vec3& k, float_t qf2) const
+{
+	throw exc("djb_error: Not Implemented");
 }
 
 // *************************************************************************************************
 // Radial Microfacet API implementation
 
-dir radial::sample_nmap(const dir& out, double u1, double u2) const
+float_t radial::p22_std(float_t x, float_t y) const
 {
-	double mag = qf_radial(u1);
-	double phi = u2 * 2.0 * M_PI;
-	double std1 = mag * cos(phi);
-	double std2 = mag * sin(phi);
-	double sx = std1 * m_sigma1;
-	double sy = (std1 * m_rho + std2 * m_sqrt_one_minus_rho_sqr) * m_sigma2;
-
-	return dir(normalize(vec3(-sx, -sy, 1)));
+	return p22_radial(x * x + y * y);
 }
 
-dir radial::sample_vgroove(const dir& out, double u1, double u2) const
+float_t radial::sigma_std(const vec3& k) const
 {
-	double mag = qf_radial(u1);
-	double phi = u2 * 2.0 * M_PI;
-	double std1 = mag * cos(phi);
-	double std2 = mag * sin(phi);
-	double sx = std1 * m_sigma1;
-	double sy = (std1 * m_rho + std2 * m_sqrt_one_minus_rho_sqr) * m_sigma2;
-	vec3 m1 = normalize(vec3(-sx, -sy, 1));
-	vec3 m2 = normalize(vec3(+sx, +sy, 1));
-	vec3 o = vec3(out);
-	double tmp1 = max(0.0, dot(o, m1));
-	double tmp2 = max(0.0, dot(o, m2));
-	double tmp3 = tmp2 / (tmp1 + tmp2);
-
-	if (u1 > tmp3) // another random number should be used here...
-		return dir(m1);
-	else
-		return dir(m2);
+	return sigma_std_radial(k.z);
 }
 
-dir radial::sample_smith(const dir& out, double u1, double u2) const
-{
-	return sample_nmap(out, u1, u2);
+void
+radial::sample_vp22_std_nmap(
+	float_t u1, float_t u2, const vec3& k,
+	float_t *xslope, float_t *yslope
+) const {
+	float_t phi_h = u1 * M_PI * 2.0;
+	float_t r_h = qf_radial(u2);
+
+	(*xslope) = r_h * cos(phi_h);
+	(*yslope) = r_h * sin(phi_h);
 }
 
-dir radial::sample(const dir& out, double u1, double u2) const
-{
-	switch (m_gaf) {
-		case GAF_NONE:    return sample_nmap(out, u1, u2);
-		case GAF_VGROOVE: return sample_vgroove(out, u1, u2);
-		case GAF_SMITH:   return sample_smith(out, u1, u2);
-		default: abort(); // should never happen
-	}
-}
+void
+radial::sample_vp22_std_smith(
+	float_t u1, float_t u2,
+	const vec3& k,
+	float_t *xslope, float_t *yslope
+) const {
+	if (supports_smith_vndf_sampling()) {
+		float_t cos_theta_k = k.z;
+		float_t sin_theta_k = k.z < 1.0 ? sqrt(1.0 - k.z * k.z) : 0.0;
+		float_t tx = qf2_radial(u1, cos_theta_k, sin_theta_k);
+		float_t ty = qf3_radial(u2, tx);
 
-double radial::pdf_nmap(const dir& out, const dir& m) const
-{
-	return (p22(m) / pow(cos(m.theta), 3.0));
-}
+		if (sin_theta_k == 0.0) {
+			/* perfect normal incidence */
+			(*xslope) = tx;
+			(*yslope) = ty;
+		} else {
+			/* nonnormal incidence */
+			float nrm = inversesqrt(k.x * k.x + k.y * k.y);
+			float cos_phi_k = k.x * nrm;
+			float sin_phi_k = k.y * nrm;
 
-double radial::pdf_vgroove(const dir& out, const dir& m) const
-{
-	double G1 = gaf_vgroove(out, out, m);
-	double D = ndf(m);
-	vec3 vo = normalize(vec3(out));
-	vec3 vm = normalize(vec3(m));
-
-	return (G1 * D * max(0.0, dot(vo, vm)) / cos(out.theta));
-}
-
-double radial::pdf_smith(const dir& out, const dir& m) const
-{
-	return pdf_nmap(out, m);
-}
-
-double radial::pdf(const dir& out, const dir& m) const
-{
-	switch (m_gaf) {
-		case GAF_NONE:    return pdf_nmap(out, m);
-		case GAF_VGROOVE: return pdf_vgroove(out, m);
-		case GAF_SMITH:   return pdf_smith(out, m);
-		default: abort(); // should never happen
-	}
-}
-
-double radial::p22(const dir& h) const
-{
-	double tan_theta = tan(h.theta);
-	double x1 = -tan_theta * cos(h.phi);
-	double x2 = -tan_theta * sin(h.phi);
-	double z = (x1*x1*m_m22 + x2*x2*m_m11 - 2.0*x1*x2*m_m12) / m_det;
-
-	return p22_radial(z) / sqrt(m_det);
-}
-
-double radial::g1(const dir& k) const
-{
-	if (k.theta < M_PI * 0.5) {
-		if (k.theta > 0.0) {
-			double cos_phi = cos(k.phi);
-			double sin_phi = sin(k.phi);
-			double var = m_m11 * cos_phi * cos_phi
-			           + m_m22 * sin_phi * sin_phi
-			           + m_m12 * 2.0 * cos_phi * sin_phi;
-			double z = tan(M_PI * 0.5 - k.theta) / sqrt(2.0 * var);
-
-			return g1_radial(z);
+			(*xslope) = cos_phi_k * tx - sin_phi_k * ty;
+			(*yslope) = sin_phi_k * tx + cos_phi_k * ty;
 		}
-		return 1.0; // normal incidence: no shadowing
+	} else {
+		sample_vp22_std_nmap(u1, u2, k, xslope, yslope);
 	}
-	return 0.0; // horizon (or below)
 }
 
-double radial::p22_explicit(const dir& h, double r) const
-{
-	return p22_explicit(h, r, r);
-}
-
-double
-radial::p22_explicit(const dir& h, double r1, double r2, double rangle) const
-{
-	DJB_ASSERT(r1 > 0.0 && r2 > 0.0);
-	double m11, m22, m12;
-	double tan_theta = tan(h.theta);
-	double x1 = -tan_theta * cos(h.phi);
-	double x2 = -tan_theta * sin(h.phi);
-	ellipse_to_covariance(r1, r2, rangle, &m11, &m22, &m12);
-	double det = m11 * m22 - m12 * m12;
-	double z = (x1*x1*m22 + x2*x2*m11 - 2.0*x1*x2*m12) / det;
-	double p22 = p22_radial(z) / sqrt(det);
-
-	return p22;
-}
-
-double radial::ndf_explicit(const dir& h, double r) const
-{
-	return ndf_explicit(h, r, r);
-}
-
-double
-radial::ndf_explicit(const dir& h, double r1, double r2, double rangle) const
-{
-	double p22 = p22_explicit(h, r1, r2, rangle);
-
-	return (p22 / pow(cos(h.theta), 4.0));
-}
-
-dir
-radial::sample_explicit(const dir& out, double u1, double u2, double r) const
-{
-	return sample_explicit(out, u1, u2, r, r);
-}
-
-dir
-radial::sample_explicit(
-	const dir& out, 
-	double u1, double u2, 
-	double r1, double r2, double rangle
+float_t
+radial::qf2_radial(
+	float_t u,
+	float_t cos_theta_k,
+	float_t sin_theta_k
 ) const {
-	double m11, m22, m12;
-	double mag = qf_radial(u1);
-	double phi = u2 * 2.0 * M_PI;
-	double std1 = mag * cos(phi);
-	double std2 = mag * sin(phi);
-	ellipse_to_covariance(r1, r2, rangle, &m11, &m22, &m12);
-	double sigma1 = sqrt(m11);
-	double sigma2 = sqrt(m22);
-	double rho = m12 / (sigma1 * sigma2);
-	double sx = std1 * sigma1;
-	double sy = (std1 * rho + std2 * sqrt(1.0 - rho * rho)) * sigma2;
-
-	return dir(normalize(vec3(-sx, -sy, 1)));
+	throw exc("djb_error: Not Implemented");
 }
 
-vec3 radial::evalp_explicit(const dir& i, const dir& o, double r) const
+float_t radial::qf3_radial(float_t u, float_t qf2) const
 {
-	return evalp_explicit(i, o, r, r);
+	throw exc("djb_error: Not Implemented");
 }
 
-vec3
-radial::evalp_explicit(
-	const dir& i, const dir& o, 
-	double r1, double r2, double rangle
-) const {
-	dir h, d;
-	std_coords_to_half_diff_coords(i, o, h, d);
-
-	vec3 F = eval_fresnel(d.theta);
-	double D = ndf_explicit(h, r1, r2, rangle);
-	double G = gaf_explicit(i, o, h, r1, r2, rangle);
-
-	return (F * D * G) / (4.0 * cos(o.theta));
-}
-
-double
-radial::gaf_explicit(const dir& i, const dir& o, const dir& h, double r) const
-{
-	return gaf_explicit(i, o, h, r, r);
-}
-
-double
-radial::gaf_explicit(
-	const dir& i, const dir& o, const dir& h,
-	double r1, double r2, double rangle
-) const {
-	double g1_o = g1_explicit(o, r1, r2, rangle);
-
-	if (m_shadow) {
-		double g1_i = g1_explicit(i, r1, r2, rangle);
-		double tmp = g1_i * g1_o;
-
-		if (tmp > 0.0)
-			return (tmp / (g1_i + g1_o - tmp));
-
-		return 0.0; // fully shadowed
-	}
-
-	return g1_o;
-}
-
-double radial::g1_explicit(const dir& k, double r) const
-{
-	return g1_explicit(k, r, r);
-}
-
-double
-radial::g1_explicit(const dir& k, double r1, double r2, double rangle) const
-{
-	if (k.theta < M_PI * 0.5) {
-		if (k.theta > 0.0) {
-			double m11, m22, m12;
-			ellipse_to_covariance(r1, r2, rangle, &m11, &m22, &m12);
-			double cos_phi = cos(k.phi);
-			double sin_phi = sin(k.phi);
-			double var = m11 * cos_phi * cos_phi
-			           + m22 * sin_phi * sin_phi
-			           + m12 * 2.0 * cos_phi * sin_phi;
-			double z = tan(M_PI * 0.5 - k.theta) / sqrt(2.0 * var);
-
-			return g1_radial(z);
-		}
-		return 1.0; // normal incidence: no shadowing
-	}
-	return 0.0; // horizon (or below)
-}
 
 // *************************************************************************************************
-// Gaussian Microfacet API implementation
+// Beckmann Microfacet API implementation
 
-double gaussian::p22_radial(double z) const
+float_t beckmann::p22_radial(float_t r_sqr) const
 {
-	return (exp(-0.5 * z) / (2.0 * M_PI));
+	return (exp(-r_sqr) / M_PI);
 }
 
-double gaussian::g1_radial(double z) const
+float_t beckmann::sigma_std_radial(float_t cos_theta_k) const
 {
-	z/= sqrt(2.0);
-	double lambda = 0.5 * (exp(-z*z) / (z * sqrt(M_PI)) - 1.0 + erf(z));
-	return (1.0 / (1.0 + lambda));
+	if (cos_theta_k == 1.0) return 1.0;
+	float_t sin_theta_k = sqrt(1.0 - cos_theta_k * cos_theta_k);
+	float_t cot_theta_k = cos_theta_k / sin_theta_k;
+	float_t nu = cot_theta_k;
+	float_t tmp = exp(-nu * nu) * inversesqrt(M_PI);
+	return (cos_theta_k * (1.0 + erf(nu)) + sin_theta_k * tmp) / 2.0;
 }
 
-double gaussian::cdf_radial(double theta) const
+float_t beckmann::cdf_radial(float_t r) const
 {
-	double z = tan(theta);
-	return (1.0 - exp(-0.5 * z * z));
+	return (1.0 - exp(-r * r));
 }
 
-double gaussian::qf_radial(double r) const
+float_t beckmann::qf_radial(float_t u) const
 {
-	return sqrt(-2.0 * log(1.0 - r));
+	return sqrt(-log(1.0 - u));
+}
+
+float_t beckmann::qf1(float_t u) const
+{
+	return erfinv(2.0 * u - 1.0);
+}
+
+/* Based on Mitsuba's source code, from Wenzel Jakob */
+float_t beckmann::qf2_radial(float_t u, float_t cos_theta_k, float_t sin_theta_k) const
+{
+	const float_t sqrt_pi_inv = 1. / sqrt(M_PI);
+
+	/* The original inversion routine from the paper contained
+	   discontinuities, which causes issues for QMC integration
+	   and techniques like Kelemen-style MLT. The following code
+	   performs a numerical inversion with better behavior */
+	float_t cot_theta_k = cos_theta_k / sin_theta_k;
+	float_t tan_theta_k = sin_theta_k / cos_theta_k;
+
+	/* Search interval -- everything is parameterized
+	   in the erf() domain */
+	float_t a = -1, c = erf(cot_theta_k);
+	u = max(u, (float_t)1e-6f);
+
+	/* Start with a good initial guess */
+	/* We can do better (inverse of an approximation computed in Mathematica) */
+	float_t fit = 1 + cos_theta_k 
+	            * (-0.876f + cos_theta_k * (0.4265f - 0.0594f * cos_theta_k));
+	float_t b = c - (1 + c) * std::pow(1 - u, fit);
+
+	/* Normalization factor for the CDF */
+	float_t normalization = 1 / (1 + c + sqrt_pi_inv *
+		tan_theta_k * exp(-cot_theta_k * cot_theta_k));
+
+	int it = 0;
+	while (++it < 10) {
+		/* Bisection criterion -- the oddly-looking
+		   boolean expression are intentional to check
+		   for NaNs at little additional cost */
+		if (!(b >= a && b <= c))
+			b = 0.5f * (a + c);
+
+		/* Evaluate the CDF and its derivative
+		   (i.e. the density function) */
+		float_t invErf = erfinv(b);
+		float_t value = normalization * (1 + b + sqrt_pi_inv *
+			tan_theta_k * std::exp(-invErf * invErf)) - u;
+		float_t derivative = normalization * (1 - invErf * tan_theta_k);
+
+		if (fabs(value) < 1e-5f)
+			break;
+
+		/* Update bisection intervals */
+		if (value > 0)
+			c = b;
+		else
+			a = b;
+
+		b -= value / derivative;
+	}
+
+	/* Now convert back into a slope value */
+	return erfinv(max(-(float_t)0.9999, b));
+}
+
+float_t beckmann::qf3_radial(float_t u, float_t qf2) const
+{
+	return qf1(u);
+}
+
+beckmann::lrep::lrep(
+	float_t E1, float_t E2, float_t E3, float_t E4, float_t E5
+): m_E1(E1), m_E2(E2), m_E3(E3), m_E4(E4), m_E5(E5) {
+	/* empty */
+}
+
+void beckmann::params_to_lrep(const microfacet::params& params, lrep *lrep)
+{
+	DJB_ASSERT(lrep && "Null output ptr");
+	float_t ax, ay, rho, tx_n, ty_n;
+	params.get_pdfparams(&ax, &ay, &rho, &tx_n, &ty_n);
+	(*lrep) = beckmann::lrep(tx_n, ty_n,
+	                         (float_t)0.5 * ax * ax + tx_n * tx_n,
+	                         (float_t)0.5 * ay * ay + ty_n * ty_n,
+	                         (float_t)0.5 * rho * ax * ay + tx_n * ty_n);
+}
+
+void beckmann::lrep_to_params(const lrep& lrep, microfacet::params *params)
+{
+	DJB_ASSERT(params && "Null output ptr");
+	float_t tx_n = lrep.m_E1;
+	float_t ty_n = lrep.m_E2;
+	float_t tmp1 = max((float_t)0.0, lrep.m_E3 - lrep.m_E1 * lrep.m_E1);
+	float_t tmp2 = max((float_t)0.0, lrep.m_E4 - lrep.m_E2 * lrep.m_E2);
+	/* clamp the parameters to valid values */
+	float_t ax = (float_t)max(1e-5, sqrt(2.0 * tmp1));
+	float_t ay = (float_t)max(1e-5, sqrt(2.0 * tmp2));
+	float_t rho = (float_t)2.0 * (lrep.m_E5 - lrep.m_E1 * lrep.m_E2) / (ax * ay);
+	rho = min((float_t)0.99, max((float_t)-0.99, rho));
+
+	(*params) = microfacet::params::pdfparams(ax, ay, rho, tx_n, ty_n);
+}
+
+beckmann::lrep beckmann::lrep::operator+(const lrep& r) const
+{
+	return beckmann::lrep(m_E1 + r.m_E1,
+	                      m_E2 + r.m_E2,
+	                      m_E3 + r.m_E3 + (float_t)2.0 * m_E1 * r.m_E1,
+	                      m_E4 + r.m_E4 + (float_t)2.0 * m_E2 * r.m_E2,
+	                      m_E5 + r.m_E5 + m_E1 * r.m_E2 + m_E2 * r.m_E1);
+}
+
+beckmann::lrep beckmann::lrep::operator*(float_t sc) const
+{
+	DJB_ASSERT(sc >= (float_t)0.0 && "Invalid scale");
+	float_t sc_sqr = sc * sc;
+
+	return beckmann::lrep(m_E1 * sc, m_E2 * sc,
+	                      m_E3 * sc_sqr, m_E4 * sc_sqr,
+	                      m_E5 * sc_sqr);
+}
+
+beckmann::lrep& beckmann::lrep::operator+=(const lrep& rep)
+{
+	m_E1+= rep.m_E1;
+	m_E2+= rep.m_E2;
+	m_E3+= rep.m_E3 + (float_t)2.0 * m_E1 * rep.m_E1;
+	m_E4+= rep.m_E4 + (float_t)2.0 * m_E2 * rep.m_E2;
+	m_E5+= rep.m_E5 + m_E1 * rep.m_E2 + m_E2 * rep.m_E1;
+
+	return (*this);
+}
+
+beckmann::lrep& beckmann::lrep::operator*=(float_t sc)
+{
+	DJB_ASSERT(sc >= (float_t)0.0 && "Invalid scale");
+	float_t sc_sqr = sc * sc;
+	m_E1*= sc;
+	m_E2*= sc;
+	m_E3*= sc_sqr;
+	m_E4*= sc_sqr;
+	m_E5*= sc_sqr;
+
+	return (*this);
+}
+
+void beckmann::lrep::shear(float_t tx, float_t ty)
+{
+	m_E1+= tx;
+	m_E2+= ty;
+	m_E3+= tx * tx;
+	m_E4+= ty * ty;
+	m_E5+= tx * ty;
+}
+
+void beckmann::lrep::scale(float_t x, float_t y)
+{
+	m_E1*= x;
+	m_E2*= y;
+	m_E3*= x * x;
+	m_E4*= y * y;
+	m_E5*= x * y;
 }
 
 // *************************************************************************************************
 // GGX Microfacet API implementation
 
-double ggx::p22_radial(double z) const
+float_t ggx::p22_radial(float_t r_sqr) const
 {
-	const double inv_pi = 1.0 / M_PI;
-	double den = 1.0 + z;
-
-	return (inv_pi / (den * den));
+	float_t tmp = 1.0 + r_sqr;
+	return (1.0 / (M_PI * tmp * tmp));
 }
 
-double ggx::g1_radial(double z) const
+float_t ggx::sigma_std_radial(float_t cos_theta_k) const
 {
-	double lambda = 0.5 * (sqrt(1.0 + 1.0 / (z * z)) - 1.0);
-	return (1.0 / (1.0 + lambda));
+	return ((1.0 + cos_theta_k) / 2.0);
 }
 
-double ggx::cdf_radial(double theta) const
+float_t ggx::cdf_radial(float_t r) const
 {
-	double z = tan(theta);
-	double tmp = z * z;
+	float_t tmp = r * r;
 	return (tmp / (1.0 + tmp));
 }
 
-double ggx::qf_radial(double r) const
+float_t ggx::qf_radial(float_t u) const
 {
-	return sqrt(r / (1.0 - r));
+	return sqrt(u / (1.0 - u));
+}
+
+float_t ggx::qf1(float_t u) const
+{
+	if (u < 0.5) {
+		u = (0.5 - u) * 2.0;
+		return -u * inversesqrt(1.0 - u * u);
+	} else {
+		u = (u - 0.5) * 2.0;
+		return u * inversesqrt(1.0 - u * u);
+	}
+}
+
+float_t ggx::qf2_radial(float_t u, float_t cos_theta_k, float_t sin_theta_k) const
+{
+	float sin_theta = u * (1.0 + cos_theta_k) - 1.0;
+	float cos_theta = sqrt(1.0 - sin_theta * sin_theta);
+
+	if (cos_theta > /*sin(M_PI/4)*/ 0.707107) {
+		float tan_theta = sin_theta / cos_theta;
+
+		if (sin_theta_k < /*sin(M_PI/4)*/ 0.707107) {
+			float tan_theta_k = sin_theta_k / cos_theta_k;
+
+			return -(tan_theta + tan_theta_k) / (1.0 - tan_theta * tan_theta_k);
+		} else {
+			float cot_theta_k = cos_theta_k / sin_theta_k;
+
+			return (1.0 + tan_theta * cot_theta_k) / (tan_theta - cot_theta_k);
+		}
+	} else {
+		float cot_theta = cos_theta / sin_theta;
+
+		if (sin_theta_k < /*sin(M_PI/4)*/ 0.707107) {
+			float tan_theta_k = sin_theta_k / cos_theta_k;
+
+			return (1.0 + tan_theta_k * cot_theta) / (tan_theta_k - cot_theta);
+		} else {
+			float cot_theta_k = cos_theta_k / sin_theta_k;
+
+			return (cot_theta + cot_theta_k) / (1.0 - cot_theta * cot_theta_k);
+		}
+	}
+}
+
+float_t ggx::qf3_radial(float_t u, float_t qf2) const
+{
+	float_t alpha = sqrt(1.0 + qf2 * qf2);
+	float_t S = 0;
+
+	if (u < 0.5) {
+		u = 2.0 * (0.5 - u); // remap to (0,1)
+		S = -1.0;
+	} else {
+		u = 2.0 * (u - 0.5); // remap to (0,1)
+		S = 1.0;
+	}
+
+	return S * alpha * qf3_rational_approx(u);
+}
+
+/* Based on Mitsuba's source code, from Wenzel Jakob */
+float_t ggx::qf3_rational_approx(float_t u) const
+{
+	float_t p = u * (u * (u * (-0.365728915865723) 
+	          + 0.790235037209296) - 0.424965825137544) + 0.000152998850436920;
+	float_t q = u * (u * (u * (u * 0.169507819808272 - 0.397203533833404) 
+	          - 0.232500544458471) + 1) - 0.539825872510702;
+
+	return (p / q);
 }
 
 // *************************************************************************************************
 // Tabulated Microfacet API implementation
 
-double tabular::p22_radial(double z) const
+float_t tabular::p22_radial(float_t r_sqr) const
 {
-	double x = sqrt(2.0 * atan(sqrt(z)) / M_PI);
-	return spline_eval(m_p22, x);
+	float_t r = sqrt(r_sqr);
+	float_t u = sqrt((float_t)2.0 * atan(r) / (float_t)M_PI);
+	return spline_eval(m_p22, u);
 }
 
-double tabular::g1_radial(double z) const
+float_t tabular::sigma_std_radial(float_t cos_theta_k) const
 {
-	double x = 1.0 - 2.0 * atan(z) / M_PI;
-	return spline_eval(m_g1, x);
+	float_t u = (float_t)2.0 * acos(cos_theta_k) / (float_t)M_PI;
+	return spline_eval(m_sigma, u);
 }
 
-double tabular::cdf_radial(double theta) const
+float_t tabular::cdf_radial(float_t r) const
 {
-	double z = theta * 2.0 / M_PI;
-	return spline_eval(m_cdf, sqrt(z));
+	float_t u = atan(r) * (float_t)2.0 / (float_t)M_PI;
+	if (u < (float_t)0.0) u = (float_t)0.0;
+	return spline_eval(m_cdf, sqrt(u));
 }
 
-double tabular::qf_radial(double r) const
+float_t tabular::qf_radial(float_t u) const
 {
-	double z = spline_eval(m_qf, r);
-	return tan(z * 0.5 * M_PI);
+	DJB_ASSERT(u > (float_t)0.0 && u < (float_t)1.0);
+	float_t qf = spline_eval(m_qf, u);
+	return tan(qf * (float_t)M_PI / (float_t)2.0);
 }
 
-double tabular_anisotropic::p22(const dir& k) const
+float_t tabular_anisotropic::p22_std(float_t x, float_t y) const
 {
-	double slope = tan(k.theta);
-	double sx = slope * cos(k.phi - m_rangle) / m_r1;
-	double sy = slope * sin(k.phi - m_rangle) / m_r2;
-	dir k2 = dir(normalize(vec3(-sx, -sy, 1)));
-	if (k2.phi < 0.0) k2.phi+= 2.0 * M_PI;
-	double x = k2.theta * 2.0 / M_PI;
-	double y = k2.phi * 0.5 / M_PI;
+	float_t theta = atan(sqrt(x * x + y * y));
+	float_t phi   = atan2(-y, -x);
+	return p22_std_theta_phi(theta, phi);
+}
+
+float_t tabular_anisotropic::p22_std_theta_phi(float_t theta, float_t phi) const
+{
+	if (phi < 0.0) phi+= 2.0 * M_PI;
+	float_t x = theta * 2.0 / M_PI;
+	float_t y = phi * 0.5 / M_PI;
 	int w = m_elevation_res;
 	int h = m_azimuthal_res;
 
-	return spline2d_eval<double>(m_p22, w, h, x, y) / sqrt(m_det);
+	return spline2d_eval<float_t>(m_p22, w, h, x, y);
 }
 
-double tabular_anisotropic::g1(const dir& k) const
+float_t tabular_anisotropic::sigma_std(const vec3& k) const
 {
-	double slope = tan(k.theta);
-	double sx = slope * cos(k.phi - m_rangle) * m_r1;
-	double sy = slope * sin(k.phi - m_rangle) * m_r2;
-	dir k2 = dir(normalize(vec3(-sx, -sy, 1)));
-	if (k2.phi < 0.0) k2.phi+= 2.0 * M_PI;
-	double x = k2.theta * 2.0 / M_PI;
-	double y = k2.phi * 0.5 / M_PI;
+	float_t theta = acos(k.z);
+	float_t phi = atan2(k.y, k.x);
+	if (phi < 0.0) phi+= 2.0 * M_PI;
+	float_t x = theta * 2.0 / M_PI;
+	float_t y = phi * 0.5 / M_PI;
 	int w = m_elevation_res;
 	int h = m_azimuthal_res;
 
-	return spline2d_eval<double>(m_g1, w, h, x, y);
+	return spline2d_eval<float_t>(m_sigma, w, h, x, y);
 }
 
-double tabular_anisotropic::p22_explicit(const dir& h, double r) const
-{
-	return ndf_explicit(h, r, r);
-}
-
-double
-tabular_anisotropic::p22_explicit(
-	const dir& k,
-	double r1,
-	double r2,
-	double rangle
-) const {
-	DJB_ASSERT(r1 > 0.0 && r2 > 0.0);
-	double m11, m22, m12;
-	ellipse_to_covariance(r1, r2, rangle, &m11, &m22, &m12);
-	double det = m11 * m22 - m12 * m12;
-	double slope = tan(k.theta);
-	double sx = slope * cos(k.phi - rangle) / r1;
-	double sy = slope * sin(k.phi - rangle) / r2;
-	dir k2 = dir(normalize(vec3(-sx, -sy, 1)));
-	if (k2.phi < 0.0) k2.phi+= 2.0 * M_PI;
-	double x = k2.theta * 2.0 / M_PI;
-	double y = k2.phi * 0.5 / M_PI;
-	int w = m_elevation_res;
-	int h = m_azimuthal_res;
-
-	return spline2d_eval<double>(m_p22, w, h, x, y) / sqrt(det);
-}
-
-double tabular_anisotropic::ndf_explicit(const dir& h, double r) const
-{
-	return ndf_explicit(h, r, r);
-}
-
-double
-tabular_anisotropic::ndf_explicit(
-	const dir& h,
-	double r1,
-	double r2,
-	double rangle
-) const {
-	double p22 = p22_explicit(h, r1, r2, rangle);
-
-	return (p22 / pow(cos(h.theta), 4.0));
-}
-
-vec3 
-tabular_anisotropic::evalp_explicit(const dir& i, const dir& o, double r) const
-{
-	return evalp_explicit(i, o, r, r);
-}
-
-vec3
-tabular_anisotropic::evalp_explicit(
-	const dir& i, const dir& o,
-	double r1, double r2, double rangle
-) const {
-	dir h, d;
-	std_coords_to_half_diff_coords(i, o, h, d);
-
-	vec3 F = eval_fresnel(d.theta);
-	double D = ndf_explicit(h, r1, r2, rangle);
-	double G = gaf_explicit(i, o, h, r1, r2, rangle);
-
-	return (F * D * G) / (4.0 * cos(o.theta));
-}
-
-double
-tabular_anisotropic::gaf_explicit(
-	const dir& i,
-	const dir& o,
-	const dir& h,
-	double r
-) const {
-	return gaf_explicit(i, o, h, r, r);
-}
-
-double
-tabular_anisotropic::gaf_explicit(
-	const dir& i, const dir& o, const dir& h,
-	double r1, double r2, double rangle
-) const {
-	double g1_o = g1_explicit(o, r1, r2, rangle);
-
-	if (m_shadow) {
-		double g1_i = g1_explicit(i, r1, r2, rangle);
-		double tmp = g1_i * g1_o;
-
-		if (tmp > 0.0)
-			return (tmp / (g1_i + g1_o - tmp));
-
-		return 0.0; // fully shadowed
-	}
-
-	return g1_o;
-}
-
-double tabular_anisotropic::g1_explicit(const dir& k, double r) const
-{
-	return g1_explicit(k, r, r);
-}
-
-double
-tabular_anisotropic::g1_explicit(
-	const dir& k,
-	double r1,
-	double r2,
-	double rangle
-) const {
-	double slope = tan(k.theta);
-	double sx = slope * cos(k.phi - rangle) * r1;
-	double sy = slope * sin(k.phi - rangle) * r2;
-	dir k2 = dir(normalize(vec3(-sx, -sy, 1)));
-	if (k2.phi < 0.0) k2.phi+= 2.0 * M_PI;
-	double x = k2.theta * 2.0 / M_PI;
-	double y = k2.phi * 0.5 / M_PI;
-	int w = m_elevation_res;
-	int h = m_azimuthal_res;
-
-	return spline2d_eval<double>(m_g1, w, h, x, y);
-}
-#if 0 //TODO
-dir
-tabular_anisotropic::sample_explicit(
-	const dir& out,
-	double u1, double u2,
-	double r
-) const {
-	return sample_explicit(out, u1, u2, r, r);
-}
-
-dir
-tabular_anisotropic::sample_explicit(
-	const dir& out, 
-	double u1, double u2, 
-	double r1, double r2, double rangle
-) const {
-	double m11, m22, m12;
-	double mag = qf_radial(u1);
-	double phi = u2 * 2.0 * M_PI;
-	double std1 = mag * cos(phi);
-	double std2 = mag * sin(phi);
-	ellipse_to_covariance(r1, r2, rangle, &m11, &m22, &m12);
-	double sigma1 = sqrt(m11);
-	double sigma2 = sqrt(m22);
-	double rho = m12 / (sigma1 * sigma2);
-	double sx = std1 * sigma1;
-	double sy = (std1 * rho + std2 * sqrt(1.0 - rho * rho)) * sigma2;
-
-	return dir(normalize(vec3(-sx, -sy, 1)));
-}
-#endif
 // -------------------------------------------------------------------------------------------------
-// Constructors
-tabular::tabular(int gaf, const brdf& brdf, int res, bool shadow):
-	radial(gaf, 1)
+// Constructor
+tabular::tabular(const brdf& brdf, int res, bool shadow):
+	radial()
 {
 	DJB_ASSERT(res > 2 && "Invalid Resolution");
-	m_shadow = shadow;
+	set_shadow(shadow);
 
+	// allocate memory
 	m_p22.reserve(res);
-	m_g1.reserve(res);
+	m_sigma.reserve(res);
 	m_cdf.reserve(res);
 	m_qf.reserve(res);
 
-	switch (gaf) {
-		case microfacet::GAF_NONE: compute_p22_nmap(brdf, res); break;
-		case microfacet::GAF_VGROOVE: compute_p22_vgroove(brdf, res); break;
-		case microfacet::GAF_SMITH: compute_p22_smith(brdf, res); break;
-		default: abort();
-	}
+	// eval
+	compute_p22_smith(brdf, res);
 	normalize_p22();
-	compute_g1();
-
+	compute_sigma();
 	compute_fresnel(brdf, res);
+
+	// sample
 	compute_cdf();
 	compute_qf();
 }
 
 tabular_anisotropic::tabular_anisotropic(
-	int gaf, const brdf& brdf,
+	const brdf& brdf,
 	int elevation_res,
 	int azimuthal_res,
 	bool shadow
-): microfacet(gaf, 1)
-{
-	DJB_ASSERT(elevation_res > 2 && azimuthal_res > 2 && "Invalid Resolution");
+): microfacet() {
+	DJB_ASSERT(elevation_res > 1 && azimuthal_res > 1 && "Invalid Resolution");
 	m_shadow = shadow;
 
 	m_elevation_res = elevation_res;
 	m_azimuthal_res = azimuthal_res;
 
+	// allocate memory
 	m_p22.reserve(elevation_res * azimuthal_res);
-	m_g1.reserve(elevation_res * azimuthal_res);
+	m_sigma.reserve(elevation_res * azimuthal_res);
 	m_pdf1.reserve(azimuthal_res);
 	m_cdf1.reserve(azimuthal_res);
 	m_qf1.reserve(azimuthal_res);
@@ -2136,15 +2243,13 @@ tabular_anisotropic::tabular_anisotropic(
 	m_cdf2.reserve(elevation_res * azimuthal_res);
 	m_qf2.reserve(elevation_res * azimuthal_res);
 
-	switch (gaf) {
-		case microfacet::GAF_NONE: compute_p22_nmap(brdf); break;
-		case microfacet::GAF_VGROOVE: compute_p22_vgroove(brdf); break;
-		case microfacet::GAF_SMITH: compute_p22_smith(brdf); break;
-		default: abort();
-	}
+	// eval
+	compute_p22_smith(brdf);
 	normalize_p22();
-	compute_g1();
-	compute_fresnel(brdf, m_elevation_res);
+	compute_sigma();
+	compute_fresnel(brdf, elevation_res);
+
+	// sample
 	compute_pdf1();
 	compute_cdf1();
 	compute_qf1();
@@ -2154,32 +2259,33 @@ tabular_anisotropic::tabular_anisotropic(
 }
 
 // -------------------------------------------------------------------------------------------------
-// Normalize the slope pdf
+// Normalize the Slope PDF
 void tabular::normalize_p22()
 {
-	const double dphi = 2.0 * M_PI;
 	const int ntheta = 128;
-	double dtheta = sqrt(M_PI * 0.5) / (double)ntheta;
-	double k = 0.0;
+	const float_t dphi = 2.0 * M_PI;
+	const float_t dtheta = M_PI / (float_t)ntheta;
+	float_t nint = 0.0;
 
 	for (int i = 0; i < ntheta; ++i) {
-		double tmp = (double)i / (double)ntheta; // in [0,1)
-		double theta = tmp * sqrt(M_PI * 0.5);
-		double theta_sqr = theta * theta; // in [0, pi/2)
-		double c = cos(theta_sqr);
-		double pdf = p22(dir(theta_sqr, 0.0));
+		float_t u = (float_t)i / (float_t)ntheta; // in [0,1)
+		float_t theta_h = u * u * M_PI * 0.5;
+		float_t r_h = tan(theta_h);
+		float_t cos_theta_h = cos(theta_h);
+		float_t p22_r = p22_radial(r_h * r_h);
 
-		k+= theta * (pdf * tan(theta_sqr)) / (c * c);
+		nint+= (u * p22_r * r_h) / (cos_theta_h * cos_theta_h);
 	}
-	k*= (2.0 * dtheta) * dphi;
+	nint*= dtheta * dphi;
 
 	// normalize the slope pdf
-	k = 1.0 / k;
+	DJB_ASSERT(nint > 0.0); // should never fail
+	nint = 1.0 / nint;
 	for (int i = 0; i < (int)m_p22.size(); ++i)
-		m_p22[i]*= k;
+		m_p22[i]*= nint;
 
 #ifndef NVERBOSE
-	DJB_LOG("djb_verbose: Slope PDF norm. constant = %.9f\n", k);
+	DJB_LOG("djb_verbose: Slope PDF norm. constant = %.9f\n", nint);
 #endif
 }
 
@@ -2187,20 +2293,20 @@ void tabular_anisotropic::normalize_p22()
 {
 	const int ntheta = 128;
 	const int nphi   = 256;
-	double dtheta = sqrt(0.5 * M_PI) / (double)ntheta;
-	double dphi   = 2.0 * M_PI / (double)nphi;
-	double k = 0.0;
+	float_t dtheta = sqrt(0.5 * M_PI) / (float_t)ntheta;
+	float_t dphi   = 2.0 * M_PI / (float_t)nphi;
+	float_t k = 0.0;
 
 	for (int j = 0; j < nphi; ++j) {
-		double tmp = (double)j / (double)nphi;
-		double phi = tmp * 2.0 * M_PI;
+		float_t u = (float_t)j / (float_t)nphi;
+		float_t phi = u * 2.0 * M_PI;
 		for (int i = 0; i < ntheta; ++i) {
-			double tmp = (double)i / (double)ntheta; // in [0,1)
-			double theta = tmp * sqrt(M_PI * 0.5);
-			double theta_sqr = theta * theta; // in [0, pi/2)
-			double c = cos(theta_sqr);
-			double pdf = p22(dir(theta_sqr, phi));
-			double weight = (theta * tan(theta_sqr)) / (c * c);
+			float_t u = (float_t)i / (float_t)ntheta; // in [0,1)
+			float_t theta = u * sqrt(M_PI * 0.5);
+			float_t theta_sqr = theta * theta; // in [0, pi/2)
+			float_t c = cos(theta_sqr);
+			float_t pdf = p22_std_theta_phi(theta_sqr, phi);
+			float_t weight = (theta * tan(theta_sqr)) / (c * c);
 
 			k+= (weight * pdf);
 		}
@@ -2225,180 +2331,90 @@ void tabular_anisotropic::normalize_p22()
  * The resolution at which the integral is computed is hard coded to 
  * yield sufficient precision for most distributions.
  */
-void tabular::compute_g1()
+void tabular::compute_sigma()
 {
 	const int ntheta = 90;
 	const int nphi   = 180;
-	double dtheta = sqrt(M_PI * 0.5) / (double)ntheta;
-	double dphi   = 2.0 * M_PI / (double)nphi;
+	float_t dtheta = M_PI / (float_t)ntheta;
+	float_t dphi   = 2.0 * M_PI / (float_t)nphi;
 	int cnt = m_p22.size() - 1;
 
 	for (int i = 0; i < cnt; ++i) {
-		double tmp = (double)i / (double)cnt; // in [0, 1)
-		double theta_o = tmp * 0.5 * M_PI; // in [0, pi/2)
-		double cos_theta_o = cos(theta_o);
-		double nint = 0.0;
+		float_t tmp = (float_t)i / (float_t)cnt; // in [0, 1)
+		float_t theta_k = tmp * 0.5 * M_PI; // in [0, pi/2)
+		float_t cos_theta_k = cos(theta_k);
+		float_t sin_theta_k = sin(theta_k);
+		float_t nint = 0.0;
 
 		for (int j2 = 0; j2 < nphi; ++j2) {
-			double tmp = (double)j2 / (double)nphi; // in [0, 1)
-			double phi = tmp * 2.0 * M_PI;          // in [0, 2pi)
+			float_t u_j = (float_t)j2 / (float_t)nphi; // in [0, 1)
+			float_t phi_h = u_j * 2.0 * M_PI;          // in [0, 2pi)
 			for (int j1 = 0; j1 < ntheta; ++j1) {
-				double tmp = (double)j1 / (double)ntheta; // in [0, 1)
-				double theta = tmp * sqrt(M_PI * 0.5); // in [0, sqrt(pi/2))
-				double theta_sqr = theta * theta; // in [0, pi/2)
-				double sin_theta = sin(theta_sqr);
-				double m_dot_o = sin(theta_o) * sin_theta * cos(phi)
-					           + cos_theta_o * cos(theta_sqr);
+				float_t u_i = (float_t)j1 / (float_t)ntheta; // in [0, 1)
+				float_t theta_h = u_i * u_i * M_PI * 0.5; // in [0, sqrt(pi/2))
+				float_t sin_theta_h = sin(theta_h);
+				float_t kh = sin_theta_k * sin_theta_h * cos(phi_h)
+				           + cos_theta_k * cos(theta_h);
 
-				nint+= ndf(dir(theta_sqr, phi))
-					 * max(0.0, m_dot_o)
-					 * theta * sin_theta;
+				nint+= max((float_t)0.0, kh)
+				     * ndf(vec3(theta_h, phi_h))
+				     * u_i * sin_theta_h;
 			}
 		}
-		nint*= 2.0 * dtheta * dphi;
-		m_g1.push_back(min(1.0, cos_theta_o / nint));
+		nint*= dtheta * dphi;
+		m_sigma.push_back(max((float_t)cos_theta_k, nint));
 	}
-	m_g1.push_back(0);
+	m_sigma.push_back(0);
 
 #ifndef NVERBOSE
-	DJB_LOG("djb_verbose: Smith masking term ready\n");
+	DJB_LOG("djb_verbose: Projected area term ready\n");
 #endif
 }
 
-void tabular_anisotropic::compute_g1()
+void tabular_anisotropic::compute_sigma()
 {
 	const int ntheta = 45;
 	const int nphi   = 90;
-	double dtheta = sqrt(M_PI * 0.5) / (double)ntheta;
-	double dphi   = 2.0 * M_PI / (double)nphi;
+	float_t dtheta = sqrt(M_PI * 0.5) / (float_t)ntheta;
+	float_t dphi   = 2.0 * M_PI / (float_t)nphi;
 	int w = m_elevation_res - 1;
 	int h = m_azimuthal_res;
 
 	for (int i2 = 0; i2 < h; ++i2) {
-		double tmp = (double)i2 / (double)h; // in [0, 1)
-		double phi_o = tmp * 2.0 * M_PI; // in [0, 2pi)
+		float_t tmp = (float_t)i2 / (float_t)h; // in [0, 1)
+		float_t phi_k = tmp * 2.0 * M_PI; // in [0, 2pi)
 		for (int i1 = 0; i1 < w; ++i1) {
-			double tmp = (double)i1 / (double)w; // in [0, 1)
-			double theta_o = tmp * 0.5 * M_PI; // in [0, pi/2)
-			double cos_theta_o = cos(theta_o);
-			double nint = 0.0;
+			float_t tmp = (float_t)i1 / (float_t)w; // in [0, 1)
+			float_t theta_k = tmp * 0.5 * M_PI; // in [0, pi/2)
+			float_t cos_theta_k = cos(theta_k);
+			float_t nint = 0.0;
 
 			for (int j2 = 0; j2 < nphi; ++j2) {
-				double tmp = (double)j2 / (double)nphi; // in [0, 1)
-				double phi = tmp * 2.0 * M_PI;          // in [0, 2pi)
+				float_t tmp = (float_t)j2 / (float_t)nphi; // in [0, 1)
+				float_t phi = tmp * 2.0 * M_PI;          // in [0, 2pi)
 				for (int j1 = 0; j1 < ntheta; ++j1) {
-					double tmp = (double)j1 / (double)ntheta; // in [0, 1)
-					double theta = tmp * sqrt(M_PI * 0.5); // in [0, sqrt(pi/2))
-					double theta_sqr = theta * theta; // in [0, pi/2)
-					double sin_theta = sin(theta_sqr);
-					double m_dot_o = sin(theta_o) * sin_theta * cos(phi - phi_o)
-					               + cos_theta_o * cos(theta_sqr);
-					double weight = theta * sin_theta;
-					double masking = max(0.0, m_dot_o)
-					               * ndf(dir(theta_sqr, phi));
+					float_t tmp = (float_t)j1 / (float_t)ntheta; // in [0, 1)
+					float_t theta = tmp * sqrt(M_PI * 0.5); // in [0, sqrt(pi/2))
+					float_t theta_sqr = theta * theta; // in [0, pi/2)
+					float_t sin_theta = sin(theta_sqr);
+					float_t m_dot_k = sin(theta_k) * sin_theta * cos(phi - phi_k)
+					               + cos_theta_k * cos(theta_sqr);
+					float_t weight = theta * sin_theta;
+					float_t masking = max((float_t)0.0, m_dot_k)
+					               * ndf(vec3(theta_sqr, phi));
 
 					nint+= weight * masking;
 				}
 			}
 			nint*= 2.0 * dtheta * dphi;
-			m_g1.push_back(min(1.0, cos_theta_o / nint));
+			m_sigma.push_back(max((float_t)cos_theta_k, nint));
 		}
-		m_g1.push_back(0);
+		m_sigma.push_back(0);
 	}
 
 #ifndef NVERBOSE
-	DJB_LOG("djb_verbose: Anisotropic Smith masking term ready\n");
+	DJB_LOG("djb_verbose: Anisotropic projected area term ready\n");
 #endif
-}
-
-// -------------------------------------------------------------------------------------------------
-// Inversion Assuming a Normal Mapped Microfacet BRDF
-void tabular::compute_p22_nmap(const brdf& brdf, int res)
-{
-	int cnt = res - 1;
-
-	for (int i = 0; i < cnt; ++i) {
-		double tmp = (double)i / (double)cnt; // in [0, 1)
-		double theta = tmp * sqrt(M_PI * 0.5);
-		double theta_sqr = theta * theta; // in [0, pi/2)
-		double cos_theta = cos(theta_sqr);
-		double cos_theta_sqr = cos_theta * cos_theta;
-		vec3 fr = brdf.eval(dir(theta_sqr, 0), dir(theta_sqr, 0));
-		double fr_i = fr.intensity();
-		double pdf = (cos_theta_sqr * cos_theta_sqr) * (4.0 * fr_i);
-
-		m_p22.push_back(pdf);
-	}
-	m_p22.push_back(0);
-}
-
-void tabular_anisotropic::compute_p22_nmap(const brdf& brdf)
-{
-	int w = m_elevation_res - 1;
-	int h = m_azimuthal_res;
-
-	for (int j = 0; j < h; ++j) {
-		double tmp = (double)j / (double)h;
-		double phi = tmp * 2.0 * M_PI;
-		for (int i = 0; i < w; ++i) {
-			double tmp = (double)i / (double)w; // in [0, 1)
-			double theta = tmp * 0.5 * M_PI; // in [0, 2pi)
-			double cos_theta = cos(theta);
-			double cos_theta_sqr = cos_theta * cos_theta;
-			vec3 fr = brdf.eval(dir(theta, phi), dir(theta, phi));
-			double fr_i = fr.intensity();
-			double pdf = (cos_theta_sqr * cos_theta_sqr) * (4.0 * fr_i);
-
-			m_p22.push_back(pdf);
-		}
-		m_p22.push_back(0); // for lerping
-	}
-}
-
-// -------------------------------------------------------------------------------------------------
-// Inversion Assuming a V Grooved Cavities Microfacet BRDF
-void tabular::compute_p22_vgroove(const brdf& brdf, int res)
-{
-	int cnt = res - 1;
-
-	for (int i = 0; i < cnt; ++i) {
-		double tmp = (double)i / (double)cnt; // in [0, 1)
-		double theta = tmp * sqrt(M_PI * 0.5);
-		double theta_sqr = theta * theta; // in [0, pi/2)
-		double cos_theta = cos(theta_sqr);
-		double cos_theta_sqr = cos_theta * cos_theta;
-		double gaf = max(0.5, cos_theta_sqr);
-		vec3 fr = brdf.eval(dir(theta_sqr, 0), dir(theta_sqr, 0));
-		double fr_i = fr.intensity();
-		double pdf = gaf * (cos_theta_sqr * cos_theta_sqr) * (4.0 * fr_i);
-
-		m_p22.push_back(pdf);
-	}
-	m_p22.push_back(0);
-}
-
-void tabular_anisotropic::compute_p22_vgroove(const brdf& brdf)
-{
-	int w = m_elevation_res - 1;
-	int h = m_azimuthal_res;
-
-	for (int j = 0; j < h; ++j) {
-		double tmp = (double)j / (double)h;
-		double phi = tmp * 2.0 * M_PI;
-		for (int i = 0; i < w; ++i) {
-			double tmp = (double)i / (double)w; // in [0, 1)
-			double theta = tmp * 0.5 * M_PI; // in [0, 2pi)
-			double cos_theta = cos(theta);
-			double cos_theta_sqr = cos_theta * cos_theta;
-			double gaf = max(0.5, cos_theta_sqr);
-			vec3 fr = brdf.eval(dir(theta, phi), dir(theta, phi));
-			double fr_i = fr.intensity();
-			double pdf = gaf * (cos_theta_sqr * cos_theta_sqr) * (4.0 * fr_i);
-
-			m_p22.push_back(pdf);
-		}
-		m_p22.push_back(0); // for lerping
-	}
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -2417,7 +2433,7 @@ public:
 	double& operator()(int i, int j) {return mij[j*size+i];}
 	const double& operator()(int i, int j) const {return mij[j*size+i];}
 	void transform(const std::vector<double>& v, std::vector<double>& out) const;
-	void eigenvector(std::vector<double>& out, int iterations) const;
+	std::vector<double> eigenvector(int iterations) const;
 };
 
 matrix::matrix(int size) : mij(size * size, 0), size(size)
@@ -2434,7 +2450,7 @@ void matrix::transform(const std::vector<double>& v, std::vector<double>& out) c
 	}
 }
 
-void matrix::eigenvector(std::vector<double>& out, int iterations) const
+std::vector<double> matrix::eigenvector(int iterations) const
 {
 	int j = 0;
 	std::vector<double> vec[2];
@@ -2446,36 +2462,36 @@ void matrix::eigenvector(std::vector<double>& out, int iterations) const
 		transform(vec[j], vec[1-j]);
 		j = 1 - j;
 	}
-	out = vec[j]; // TODO the memcpy can be avoided by using references
+	return vec[j];
 }
 
 void tabular::compute_p22_smith(const brdf& brdf, int res)
 {
 	int cnt = res - 1;
-	double dtheta = sqrt(M_PI * 0.5) / (double)cnt;
+	float_t dtheta = sqrt(M_PI * 0.5) / (float_t)cnt;
 	matrix km(cnt);
 
 	for (int i = 0; i < cnt; ++i) {
-		double tmp = (double)i / (double)cnt;
-		double theta = tmp * sqrt(M_PI * 0.5);
-		double theta_o = theta * theta;
-		double cos_theta_o = cos(theta_o);
-		double tan_theta_o = tan(theta_o);
-		vec3 fr = brdf.eval(dir(theta_o, 0.0), dir(theta_o, 0.0));
-		double fr_i = fr.intensity();
-		double kji_tmp = (dtheta * pow(cos_theta_o, 6.0)) * (8.0 * fr_i);
+		float_t tmp = (float_t)i / (float_t)cnt;
+		float_t theta = tmp * sqrt(M_PI * 0.5);
+		float_t theta_o = theta * theta;
+		float_t cos_theta_o = cos(theta_o);
+		float_t tan_theta_o = tan(theta_o);
+		vec3 fr = brdf.eval(vec3(theta_o, 0.0), vec3(theta_o, 0.0));
+		float_t fr_i = fr.intensity();
+		float_t kji_tmp = (dtheta * pow(cos_theta_o, 6.0)) * (8.0 * fr_i);
 
 		for (int j = 0; j < cnt; ++j) {
-			const double dphi_h = M_PI / 180.0;
-			double tmp = (double)j / (double)cnt;
-			double theta = tmp * sqrt(M_PI * 0.5);
-			double theta_h = theta * theta;
-			double cos_theta_h = cos(theta_h);
-			double tan_theta_h = tan(theta_h);
-			double tan_product = tan_theta_h * tan_theta_o;
-			double nint = 0.0;
+			const float_t dphi_h = M_PI / 180.0;
+			float_t tmp = (float_t)j / (float_t)cnt;
+			float_t theta = tmp * sqrt(M_PI * 0.5);
+			float_t theta_h = theta * theta;
+			float_t cos_theta_h = cos(theta_h);
+			float_t tan_theta_h = tan(theta_h);
+			float_t tan_product = tan_theta_h * tan_theta_o;
+			float_t nint = 0.0;
 
-			for (double phi_h = 0.0; phi_h < 2.0 * M_PI; phi_h+= dphi_h)
+			for (float_t phi_h = 0.0; phi_h < 2.0 * M_PI; phi_h+= dphi_h)
 				nint+= max(1.0, tan_product * cos(phi_h));
 			nint*= dphi_h;
 
@@ -2485,16 +2501,19 @@ void tabular::compute_p22_smith(const brdf& brdf, int res)
 	}
 
 	// compute slope pdf
-	km.eigenvector(m_p22, 4);
+	const std::vector<double> v = km.eigenvector(4);
+	for (int i = 0; i < (int)v.size(); ++i)
+		m_p22.push_back(1e-2 * v[i]);
 	m_p22.push_back(0);
 }
+
 
 void tabular_anisotropic::compute_p22_smith(const brdf& brdf)
 {
 	int w = m_elevation_res - 1;
 	int h = m_azimuthal_res;
-	double dtheta = sqrt(M_PI * 0.5) / (double)w;
-	double dphi = 2.0 * M_PI / (double)h;
+	float_t dtheta = sqrt(M_PI * 0.5) / (float_t)w;
+	float_t dphi = 2.0 * M_PI / (float_t)h;
 	std::vector<double> kv(w * h);
 	matrix km(w * h);
 
@@ -2502,45 +2521,43 @@ void tabular_anisotropic::compute_p22_smith(const brdf& brdf)
 	// compute Smith matrix
 	for (int i2 = 0; i2 < h; ++i2)
 	for (int i1 = 0; i1 < w; ++i1) {
-		double tmp1 = (double)i1 / (double)w; // in [0, 1)
-		double tmp2 = (double)i2 / (double)h; // in [0, 1)
-		double theta = tmp1 * 0.5 * M_PI; // in [0, pi/2)
-		double phi = tmp2 * 2.0 * M_PI; // in [0, 2 pi)
-		double sin_theta = sin(theta);
-		double zo = cos(theta);
-		double xo = sin_theta * cos(phi);
-		double yo = sin_theta * sin(phi);
-		vec3 fr = brdf.eval(dir(theta, phi), dir(theta, phi));
-		double fr_i = fr.intensity();
-		double kji_tmp1 = (dtheta * dphi) * (4.0 * fr_i * pow(zo, 5.0));
+		float_t tmp1 = (float_t)i1 / (float_t)w; // in [0, 1)
+		float_t tmp2 = (float_t)i2 / (float_t)h; // in [0, 1)
+		float_t theta = tmp1 * 0.5 * M_PI; // in [0, pi/2)
+		float_t phi = tmp2 * 2.0 * M_PI; // in [0, 2 pi)
+		float_t sin_theta = sin(theta);
+		float_t zo = cos(theta);
+		float_t xo = sin_theta * cos(phi);
+		float_t yo = sin_theta * sin(phi);
+		vec3 fr = brdf.eval(vec3(theta, phi), vec3(theta, phi));
+		float_t fr_i = fr.intensity();
+		float_t kji_tmp1 = (dtheta * dphi) * (4.0 * fr_i * pow(zo, 5.0));
 
 		for (int j2 = 0; j2 < h; ++j2)
 		for (int j1 = 0; j1 < w; ++j1) {
-			double tmp1 = (double)j1 / (double)w; // in [0, 1)
-			double tmp2 = (double)j2 / (double)h; // in [0, 1)
-			double theta = tmp1 * 0.5 * M_PI; // in [0, pi/2)
-			double phi = tmp2 * 2.0 * M_PI; // in [0, 2 pi)
-			double cos_theta = cos(theta);
-			double tan_theta = tan(theta);
-			double slope1 = -tan_theta * cos(phi); // x slope
-			double slope2 = -tan_theta * sin(phi); // y slope
-			double m_dot_o = zo - xo * slope1 - yo * slope2;
-			double den = cos_theta * cos_theta;
-			int j = j2 * w + j1;
-			int i = i2 * w + i1;
-			double kji_tmp2 = tan_theta * max(0.0, m_dot_o) / den;
+			float_t tmp1 = (float_t)j1 / (float_t)w; // in [0, 1)
+			float_t tmp2 = (float_t)j2 / (float_t)h; // in [0, 1)
+			float_t theta = tmp1 * 0.5 * M_PI; // in [0, pi/2)
+			float_t phi = tmp2 * 2.0 * M_PI; // in [0, 2 pi)
+			float_t cos_theta = cos(theta);
+			float_t tan_theta = tan(theta);
+			float_t slope1 = -tan_theta * cos(phi); // x slope
+			float_t slope2 = -tan_theta * sin(phi); // y slope
+			float_t m_dot_o = zo - xo * slope1 - yo * slope2;
+			float_t den = cos_theta * cos_theta;
+			float_t kji_tmp2 = tan_theta * max((float_t)0.0, m_dot_o) / den;
 
-			km(j, i) = kji_tmp1 * kji_tmp2;
+			km(j2 * w + j1, i2 * w + i1) = kji_tmp1 * kji_tmp2;
 		}
 	}
 
 	// compute slope pdf
-	km.eigenvector(kv, 4);
+	kv = km.eigenvector(4);
 
 	// compute pdf
 	for (int j = 0; j < h; ++j) {
 		for (int i = 0; i < w; ++i) {
-			double pdf = kv[j * w + i];
+			float_t pdf = kv[j * w + i];
 			m_p22.push_back(pdf);
 		}
 		m_p22.push_back(0.0);
@@ -2556,49 +2573,49 @@ void tabular::compute_fresnel(const brdf& brdf, int res)
 
 	// compute average ratio between input and Torrance Sparrow equation
 	for (int i = 0; i < cnt; ++i) {
-		const double phi_d = M_PI * 0.5; // this can NOT be tweaked
-		const double phi_h = 0.0;        // this can be tweaked (no impact on MERL)
-		double tmp = (double)i / (double)cnt;
-		double theta_d = tmp * M_PI * 0.5; // linear parameterization in theta_d
+		const float_t phi_d = M_PI * 0.5; // this can NOT be tweaked
+		const float_t phi_h = 0.0;        // this can be tweaked (no impact on MERL)
+		float_t tmp = (float_t)i / (float_t)cnt;
+		float_t theta_d = tmp * M_PI * 0.5; // linear parameterization in theta_d
 		vec3 f = vec3(0); // Fresnel value at R, G, B wavelengths
 		int count[3] = {0, 0, 0};
-		double theta_h = 0.0;
+		float_t theta_h = 0.0;
 
 		for (int j = 0; theta_h < M_PI * 0.5 - theta_d; ++j) {
-			double tmp1 = (double)j / (double)cnt;
+			float_t tmp1 = (float_t)j / (float_t)cnt;
 			theta_h = tmp1 * tmp1 * M_PI * 0.5; // in [0, pi/2)
 
 			if (theta_h > M_PI * 0.5) continue;
 
-			dir dir_h(theta_h, phi_h);
-			dir dir_d(theta_d, phi_d);
-			dir dir_i, dir_o;
-			half_diff_coords_to_std(dir_h, dir_d, dir_i, dir_o);
+			vec3 dir_h = vec3(theta_h, phi_h);
+			vec3 dir_d = vec3(theta_d, phi_d);
+			vec3 dir_i, dir_o;
+			hd_to_io(dir_h, dir_d, &dir_i, &dir_o);
 
 			vec3 fr1 = brdf.eval(dir_i, dir_o);
 			vec3 fr2 = eval(dir_i, dir_o);
 
 			if (fr2.x > /* epsilon */1e-4) {
-				double ratio = fr1.x / fr2.x;
+				float_t ratio = fr1.x / fr2.x;
 				f.x+= ratio;
 				++count[0];
 			}
 			if (fr2.y > /* epsilon */1e-4) {
-				double ratio = fr1.y / fr2.y;
+				float_t ratio = fr1.y / fr2.y;
 				f.y+= ratio;
 				++count[1];
 			}
 			if (fr2.z > /* epsilon */1e-4) {
-				double ratio = fr1.z / fr2.z;
+				float_t ratio = fr1.z / fr2.z;
 				f.z+= ratio;
 				++count[2];
 			}
 		}
 
 		// compute average
-		fresnel[i].x = count[0] == 0 ? 1.0 : min(1.0, f.x / (double)count[0]);
-		fresnel[i].y = count[1] == 0 ? 1.0 : min(1.0, f.y / (double)count[1]);
-		fresnel[i].z = count[2] == 0 ? 1.0 : min(1.0, f.z / (double)count[2]);
+		fresnel[i].x = count[0] == 0 ? 1.0 : min((float_t)1.0, f.x / (float_t)count[0]);
+		fresnel[i].y = count[1] == 0 ? 1.0 : min((float_t)1.0, f.y / (float_t)count[1]);
+		fresnel[i].z = count[2] == 0 ? 1.0 : min((float_t)1.0, f.z / (float_t)count[2]);
 	}
 	// copy last value
 	fresnel[res - 1] = fresnel[res - 2];
@@ -2615,49 +2632,49 @@ void tabular_anisotropic::compute_fresnel(const brdf& brdf, int res)
 
 	// compute average ratio between input and Torrance Sparrow equation
 	for (int i = 0; i < cnt; ++i) {
-		const double phi_d = M_PI * 0.5; // this can NOT be tweaked
-		const double phi_h = 0.0;        // this can be tweaked (no impact on MERL)
-		double tmp = (double)i / (double)cnt;
-		double theta_d = tmp * M_PI * 0.5; // linear parameterization in theta_d
+		const float_t phi_d = M_PI * 0.5; // this can NOT be tweaked
+		const float_t phi_h = 0.0;        // this can be tweaked (no impact on MERL)
+		float_t tmp = (float_t)i / (float_t)cnt;
+		float_t theta_d = tmp * M_PI * 0.5; // linear parameterization in theta_d
 		vec3 f = vec3(0); // Fresnel value at R, G, B wavelengths
 		int count[3] = {0, 0, 0};
-		double theta_h = 0.0;
+		float_t theta_h = 0.0;
 
 		for (int j = 0; theta_h < M_PI * 0.5 - theta_d; ++j) {
-			double tmp1 = (double)j / (double)cnt;
+			float_t tmp1 = (float_t)j / (float_t)cnt;
 			theta_h = tmp1 * tmp1 * M_PI * 0.5; // in [0, pi/2)
 
 			if (theta_h > M_PI * 0.5) continue;
 
-			dir dir_h(theta_h, phi_h);
-			dir dir_d(theta_d, phi_d);
-			dir dir_i, dir_o;
-			half_diff_coords_to_std(dir_h, dir_d, dir_i, dir_o);
+			vec3 dir_h = vec3(theta_h, phi_h);
+			vec3 dir_d = vec3(theta_d, phi_d);
+			vec3 dir_i, dir_o;
+			hd_to_io(dir_h, dir_d, &dir_i, &dir_o);
 
 			vec3 fr1 = brdf.eval(dir_i, dir_o);
 			vec3 fr2 = eval(dir_i, dir_o);
 
 			if (fr2.x > /* epsilon */1e-4) {
-				double ratio = fr1.x / fr2.x;
+				float_t ratio = fr1.x / fr2.x;
 				f.x+= ratio;
 				++count[0];
 			}
 			if (fr2.y > /* epsilon */1e-4) {
-				double ratio = fr1.y / fr2.y;
+				float_t ratio = fr1.y / fr2.y;
 				f.y+= ratio;
 				++count[1];
 			}
 			if (fr2.z > /* epsilon */1e-4) {
-				double ratio = fr1.z / fr2.z;
+				float_t ratio = fr1.z / fr2.z;
 				f.z+= ratio;
 				++count[2];
 			}
 		}
 
 		// compute average
-		fresnel[i].x = count[0] == 0 ? 1.0 : min(1.0, f.x / (double)count[0]);
-		fresnel[i].y = count[1] == 0 ? 1.0 : min(1.0, f.y / (double)count[1]);
-		fresnel[i].z = count[2] == 0 ? 1.0 : min(1.0, f.z / (double)count[2]);
+		fresnel[i].x = count[0] == 0 ? 1.0 : min((float_t)1.0, f.x / (float_t)count[0]);
+		fresnel[i].y = count[1] == 0 ? 1.0 : min((float_t)1.0, f.y / (float_t)count[1]);
+		fresnel[i].z = count[2] == 0 ? 1.0 : min((float_t)1.0, f.z / (float_t)count[2]);
 	}
 	// copy last value
 	fresnel[res - 1] = fresnel[res - 2];
@@ -2668,28 +2685,23 @@ void tabular_anisotropic::compute_fresnel(const brdf& brdf, int res)
 }
 
 // -------------------------------------------------------------------------------------------------
-// Compute the CDF (mostly used for debug)
+// Compute the CDF (stored for debugging)
 void tabular::compute_cdf()
 {
 	int cnt = (int)m_p22.size() - 1;
-	double dtheta = sqrt(0.5 * M_PI) / (double)cnt;
+	float_t dtheta = M_PI / (float_t)cnt;
+	float_t nint = 0.0;
 
 	m_cdf.resize(0);
 	for (int i = 0; i < cnt; ++i) {
-		double nint = 0.0;
+		float_t u = (float_t)i / (float_t)cnt;
+		float_t theta_h = u * u * M_PI * 0.5;
+		float_t cos_theta_h = cos(theta_h);
+		float_t r_h = tan(theta_h);
+		float_t p22_r = p22_radial(r_h * r_h);
 
-		for (int j = 0; j <= i; ++j) {
-			double tmp = (double)j / (double)cnt;
-			double theta = tmp * sqrt(M_PI * 0.5);
-			double theta_sqr = theta * theta; // in [0, pi/2)
-			double cos_theta = cos(theta_sqr);
-			double pdf = p22(dir(theta_sqr, 0));
-
-			nint+= (theta * tan(theta_sqr) * pdf)
-			     / (cos_theta * cos_theta);
-		}
-		nint*= (2.0 * dtheta) * /* normalize */(2.0 * M_PI);
-		m_cdf.push_back(nint);
+		nint+= (u * r_h * p22_r) / (cos_theta_h * cos_theta_h);
+		m_cdf.push_back(nint * dtheta * /* normalize */(2.0 * M_PI));
 	}
 	m_cdf.push_back(1);
 
@@ -2708,16 +2720,16 @@ void tabular::compute_qf()
 	m_qf.resize(0);
 	m_qf.push_back(0);
 	for (int i = 1; i < cnt; ++i) {
-		double cdf = (double)i / (double)cnt;
+		float_t cdf = (float_t)i / (float_t)cnt;
 
 		for (int j = 0; j < res; ++j) {
-			double tmp = (double)j / (double)res;
-			double theta = tmp * M_PI * 0.5;
-			double qf = cdf_radial(theta);
+			float_t u = (float_t)j / (float_t)res;
+			float_t theta_h = u * M_PI * 0.5;
+			float_t qf = cdf_radial(tan(theta_h));
 
 			// lerp lookup
 			if (qf >= cdf) {
-				m_qf.push_back(tmp);
+				m_qf.push_back(u);
 				break;
 			} else if (j == res) {
 				m_qf.push_back(1.0);
@@ -2731,75 +2743,78 @@ void tabular::compute_qf()
 }
 
 // -------------------------------------------------------------------------------------------------
-// Slope space p22 fetch
-double tabular_anisotropic::p22(double x, double y) const
-{
-	double theta = atan(sqrt(x * x + y * y));
-	double phi = atan2(x, y);
-
-	return p22(dir(theta, phi));
-}
-
-// -------------------------------------------------------------------------------------------------
 // Tabular Anisotropic Fetches
-double tabular_anisotropic::pdf1(double phi) const
+float_t tabular_anisotropic::pdf1(float_t phi) const
 {
-	double z = phi * 0.5 / M_PI;
+	float_t z = phi * 0.5 / M_PI;
 	while (z < 0.0) z+= 1.0;
 	while (z > 1.0) z-= 1.0;
 
 	return spline_eval(m_pdf1, z);
 }
 
-double tabular_anisotropic::cdf1(double phi) const
+float_t tabular_anisotropic::cdf1(float_t phi) const
 {
-	double z = phi * 0.5 / M_PI;
+	float_t z = phi * 0.5 / M_PI;
 	while (z < 0.0) z+= 1.0;
 	while (z > 1.0) z-= 1.0;
 
 	return spline_eval(m_cdf1, z);
 }
 
-double tabular_anisotropic::qf1(double u1) const
+float_t tabular_anisotropic::qf1(float_t u1) const
 {
 	DJB_ASSERT(u1 >= 0.0 && u1 <= 1.0 && "Invalid Variate");
-	return spline_eval(m_qf1, u1);
+	return spline_eval(m_qf1, u1) * 2.0 * M_PI;
 }
 
-double tabular_anisotropic::pdf2(double theta, double phi) const
+float_t tabular_anisotropic::pdf2(float_t theta, float_t phi) const
 {
-	DJB_ASSERT(theta >= 0.0 && theta <= 0.5 * M_PI && "Invalid Angle");
+	DJB_ASSERT(theta >= 0.0 && "Invalid Angle");
+	if (theta >= 0.5 * M_PI) return 0.0;
 	int w = m_elevation_res;
 	int h = m_azimuthal_res;
-	double x = theta * 2.0 / M_PI; // in [0, 1]
-	double y = phi * 0.5 / M_PI; // in [0, 1]
-	while (y < 0.0) y+= 1.0;
-	while (y >= 1.0) y-= 1.0; // repeat
+	float_t x = theta * 2.0 / M_PI; // in [0, 1]
+	float_t y = phi * 0.5 / M_PI; // in [0, 1]
 
 	return spline2d_eval(m_pdf2, w, h, x, y);
 }
 
-double tabular_anisotropic::cdf2(double theta, double phi) const
+float_t tabular_anisotropic::cdf2(float_t theta, float_t phi) const
 {
-	DJB_ASSERT(theta >= 0.0 && theta <= 0.5 * M_PI && "Invalid Angle");
+	DJB_ASSERT(theta >= 0.0 && "Invalid Angle");
+	if (theta >= 0.5 * M_PI) return 1.0;
 	int w = m_elevation_res;
 	int h = m_azimuthal_res;
-	double x = theta * 2.0 / M_PI; // in [0, 1]
-	double y = phi * 0.5 / M_PI; // in [0, 1]
-	while (y < 0.0) y+= 1.0;
-	while (y >= 1.0) y-= 1.0; // repeat
+	float_t x = theta * 2.0 / M_PI; // in [0, 1]
+	float_t y = phi * 0.5 / M_PI; // in [0, 1]
 
 	return spline2d_eval(m_cdf2, w, h, x, y);
 }
 
-double tabular_anisotropic::qf2(double u2, double u1) const
+float_t tabular_anisotropic::qf2(float_t u, float_t phi) const
 {
-	DJB_ASSERT(u1 >= 0.0 && u1 <= 1.0 && "Invalid Variate");
-	DJB_ASSERT(u2 >= 0.0 && u2 <= 1.0 && "Invalid Variate");
+	DJB_ASSERT(u >= 0.0 && u <= 1.0 && "Invalid Variate");
 	int w = m_elevation_res;
 	int h = m_azimuthal_res;
+	float_t u1 = phi / (2.0 * M_PI);
 
-	return spline2d_eval(m_qf2, w, h, u2, u1);
+	return spline2d_eval(m_qf2, w, h, u, u1) * 0.5 * M_PI;
+}
+
+// -------------------------------------------------------------------------------------------------
+// Importance sample an anisotropic microfacet NDF
+void
+tabular_anisotropic::sample_vp22_std_nmap(
+	float_t u1, float_t u2, const vec3& k,
+	float_t *xslope, float_t *yslope
+) const {
+	float_t phi = qf1(u1);
+	float_t theta = qf2(u2, phi);
+	float_t tan_theta = tan(theta);
+
+	(*xslope) = -tan_theta * cos(phi);
+	(*yslope) = -tan_theta * sin(phi);
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -2815,19 +2830,19 @@ void tabular_anisotropic::compute_pdf1()
 {
 	int ntheta = 256;
 	int nphi   = m_azimuthal_res;
-	double dtheta = 0.5 * M_PI / (double)ntheta;
+	float_t dtheta = 0.5 * M_PI / (float_t)ntheta;
 
 	m_pdf1.resize(0);
 	for (int i = 0; i < nphi; ++i) {
-		double tmp = (double)i / (double)nphi; // in (0,1)
-		double phi = tmp * 2.0 * M_PI; // in [0,2pi)
-		double nint = 0.0;
+		float_t u = (float_t)i / (float_t)nphi; // in (0,1)
+		float_t phi = u * 2.0 * M_PI; // in [0,2pi)
+		float_t nint = 0.0;
 
 		for (int j = 0; j < ntheta; ++j) {
-			double tmp = (double)j / (double)ntheta; // in (0,1)
-			double theta = tmp * 0.5 * M_PI; // in [0,pi/2)
-			double p22 = this->p22(dir(theta, phi));
-			double cos_theta = cos(theta);
+			float_t u = (float_t)j / (float_t)ntheta; // in (0,1)
+			float_t theta = u * 0.5 * M_PI; // in [0,pi/2)
+			float_t p22 = this->p22_std_theta_phi(theta, phi);
+			float_t cos_theta = cos(theta);
 
 			nint+= (p22 * tan(theta)) / (cos_theta * cos_theta);
 		}
@@ -2844,18 +2859,17 @@ void tabular_anisotropic::compute_pdf1()
 // Compute CDF 1 (stored for debug)
 void tabular_anisotropic::compute_cdf1()
 {
-	int cnt = (int)m_azimuthal_res - 2;
-	double dphi = 2.0 * M_PI / (double)cnt;
+	int cnt = (int)m_azimuthal_res - 1;
+	float_t dphi = 2.0 * M_PI / (float_t)cnt;
 
 	m_cdf1.resize(0);
-	m_cdf1.push_back(0.0);
 	for (int i = 0; i < cnt; ++i) {
-		double nint = 0.0;
+		float_t nint = 0.0;
 
-		for (int j = 0; j <= i; ++j) {
-			double tmp = (double)j / (double)cnt;
-			double phi = tmp * 2.0 * M_PI;
-			double pdf = pdf1(phi);
+		for (int j = 0; j < i; ++j) {
+			float_t u = (float_t)j / (float_t)cnt;
+			float_t phi = u * 2.0 * M_PI;
+			float_t pdf = pdf1(phi);
 
 			nint+= pdf;
 		}
@@ -2873,21 +2887,21 @@ void tabular_anisotropic::compute_cdf1()
 void tabular_anisotropic::compute_qf1()
 {
 	int cnt = (int)m_cdf1.size() - 1;
-	int res = cnt * 8; // resolution of inversion
+	int res = cnt * 8; // resolution for inversion
 
 	m_qf1.resize(0);
 	m_qf1.push_back(0);
 	for (int i = 1; i < cnt; ++i) {
-		double cdf = (double)i / (double)cnt;
+		float_t cdf = (float_t)i / (float_t)cnt;
 
 		for (int j = 0; j < res; ++j) {
-			double tmp = (double)j / (double)res;
-			double phi = tmp * 2.0 * M_PI;
-			double qf = cdf1(phi);
+			float_t u = (float_t)j / (float_t)res;
+			float_t phi = u * 2.0 * M_PI;
+			float_t qf = cdf1(phi);
 
 			// lerp lookup
 			if (qf >= cdf) {
-				m_qf1.push_back(tmp);
+				m_qf1.push_back(u);
 				break;
 			} else if (j == res) {
 				m_qf1.push_back(1.0);
@@ -2914,15 +2928,14 @@ void tabular_anisotropic::compute_pdf2()
 
 	m_pdf2.resize(0);
 	for (int i = 0; i < nphi; ++i) {
-		double tmp = (double)i / (double)nphi; // in [0,1)
-		double phi = tmp * 2.0 * M_PI; // in [0,2pi)
+		float_t u = (float_t)i / (float_t)nphi; // in [0,1)
+		float_t phi = u * 2.0 * M_PI; // in [0,2pi)
 
 		for (int j = 0; j < ntheta; ++j) {
-			double tmp = (double)j / (double)ntheta; // in [0,1)
-			double theta = tmp * 0.5 * M_PI; // in [0,pi/2)
-			double p22 = this->p22(dir(theta, phi));
-			double p1 = this->pdf1(phi);
-			DJB_ASSERT(p1 > 0.0 && "Undefined PDF");
+			float_t u = (float_t)j / (float_t)ntheta; // in [0,1)
+			float_t theta = u * 0.5 * M_PI; // in [0,pi/2)
+			float_t p22 = this->p22_std_theta_phi(theta, phi);
+			float_t p1 = this->pdf1(phi);
 
 			m_pdf2.push_back(p22 / p1);
 		}
@@ -2940,21 +2953,21 @@ void tabular_anisotropic::compute_cdf2()
 {
 	int ntheta = m_elevation_res - 1;
 	int nphi = m_azimuthal_res;
-	double dtheta = 0.5 * M_PI / (double)ntheta;
+	float_t dtheta = 0.5 * M_PI / (float_t)ntheta;
 
 	m_cdf2.resize(0);
 	for (int i = 0; i < nphi; ++i) {
-		double tmp = (double)i / (double)nphi; // in [0,1)
-		double phi = tmp * 2.0 * M_PI; // in [0,2pi)
+		float_t u = (float_t)i / (float_t)nphi; // in [0,1)
+		float_t phi = u * 2.0 * M_PI; // in [0,2pi)
 
 		for (int j = 0; j < ntheta; ++j) {
-			double nint = 0.0;
+			float_t nint = 0.0;
 
 			for (int k = 0; k <= j; ++k) {
-				double tmp = (double)k / (double)ntheta; // in [0,1)
-				double theta = tmp * 0.5 * M_PI; // in [0,pi/2)
-				double pdf2 = this->pdf2(theta, phi);
-				double cos_theta = cos(theta);
+				float_t u = (float_t)k / (float_t)ntheta; // in [0,1)
+				float_t theta = u * 0.5 * M_PI; // in [0,pi/2)
+				float_t pdf2 = this->pdf2(theta, phi);
+				float_t cos_theta = cos(theta);
 
 				nint+= (pdf2 * tan(theta)) / (cos_theta * cos_theta);
 			}
@@ -2978,21 +2991,21 @@ void tabular_anisotropic::compute_qf2()
 
 	m_qf2.resize(0);
 	for (int k = 0; k < nphi; ++k) {
-		double tmp = (double)k / (double)nphi;
-		double phi = tmp * 2.0 * M_PI;
+		float_t u = (float_t)k / (float_t)nphi;
+		float_t phi = u * 2.0 * M_PI;
 
 		m_qf2.push_back(0);
 		for (int i = 1; i < ntheta; ++i) {
-			double cdf = (double)i / (double)ntheta;
+			float_t cdf = (float_t)i / (float_t)ntheta;
 
 			for (int j = 0; j < res; ++j) {
-				double tmp = (double)j / (double)res;
-				double theta = tmp * 0.5 * M_PI;
-				double qf = cdf2(theta, phi);
+				float_t u = (float_t)j / (float_t)res;
+				float_t theta = u * 0.5 * M_PI;
+				float_t qf = cdf2(theta, phi);
 
 				// lerp lookup
 				if (qf >= cdf) {
-					m_qf2.push_back(tmp);
+					m_qf2.push_back(u);
 					break;
 				} else if (j == res) {
 					m_qf2.push_back(1.0);
@@ -3011,14 +3024,14 @@ void tabular_anisotropic::compute_qf2()
 void tabular_anisotropic::normalize_pdf1()
 {
 	int cnt = 512;
-	double dphi = 2.0 * M_PI / (double)cnt;
-	double nint = 0.0;
-	double k;
+	float_t dphi = 2.0 * M_PI / (float_t)cnt;
+	float_t nint = 0.0;
+	float_t k;
 
 	for (int i = 0; i < cnt; ++i) {
-		double tmp = (double)i / (double)cnt; // in (0,1)
-		double phi = tmp * 2.0 * M_PI; // in [0,2pi)
-		double p1 = this->pdf1(phi);
+		float_t tmp = (float_t)i / (float_t)cnt; // in (0,1)
+		float_t phi = tmp * 2.0 * M_PI; // in [0,2pi)
+		float_t p1 = this->pdf1(phi);
 
 		nint+= p1;
 	}
@@ -3037,20 +3050,20 @@ void tabular_anisotropic::normalize_pdf2()
 {
 	int ntheta = 256;
 	int nphi = m_azimuthal_res;
-	double dtheta = 0.5 * M_PI / (double)ntheta;
-	std::vector<double> k(nphi, 0);
+	float_t dtheta = 0.5 * M_PI / (float_t)ntheta;
+	std::vector<float_t> k(nphi, 0);
 
 	k.resize(0);
 	for (int j = 0; j < nphi; ++j) {
-		double tmp = (double)j / (double)nphi;
-		double phi = tmp * 2.0 * M_PI; // in [0,2pi)
-		double nint = 0.0;
+		float_t tmp = (float_t)j / (float_t)nphi;
+		float_t phi = tmp * 2.0 * M_PI; // in [0,2pi)
+		float_t nint = 0.0;
 
 		for (int i = 0; i < ntheta; ++i) {
-			double tmp = (double)i / (double)ntheta; // in [0,1)
-			double theta = tmp * 0.5 * M_PI; // in [0,pi/2)
-			double pdf2 = this->pdf2(theta, phi);
-			double cos_theta = cos(theta);
+			float_t tmp = (float_t)i / (float_t)ntheta; // in [0,1)
+			float_t theta = tmp * 0.5 * M_PI; // in [0,pi/2)
+			float_t pdf2 = this->pdf2(theta, phi);
+			float_t cos_theta = cos(theta);
 
 			nint+= (pdf2 * tan(theta)) / (cos_theta * cos_theta);
 		}
@@ -3062,44 +3075,28 @@ void tabular_anisotropic::normalize_pdf2()
 		for (int i = 0; i < m_elevation_res; ++i)
 			m_pdf2[i + m_elevation_res * j]*= k[j];
 #ifndef NVERBOSE 
-		DJB_LOG("djb_verbose: PDF P2 norm. cst: %.9f\n", k[j]);
+		// DJB_LOG("djb_verbose: PDF P2 norm. cst: %.9f\n", k[j]);
 #endif
 	}
-}
-
-// -------------------------------------------------------------------------------------------------
-// Sample + PDF
-dir tabular_anisotropic::sample(const dir& out, double u1, double u2) const
-{
-	double tmp = qf1(u2);
-	double phi = tmp * 2.0 * M_PI;
-	double theta = qf2(u1, tmp) * 0.5 * M_PI;
-
-	return dir(theta, phi);
-}
-
-double tabular_anisotropic::pdf(const dir& out, const dir& m) const
-{
-	return p22(m) / pow(cos(m.theta), 3.0);
 }
 
 // -------------------------------------------------------------------------------------------------
 // Accessors
-const std::vector<double>&
-tabular_anisotropic::get_p22v(int *elevcnt, int *azimcnt) const
+const std::vector<float_t>&
+tabular_anisotropic::get_p22v(int *elev_cnt, int *azim_cnt) const
 {
-	if (elevcnt) *elevcnt = m_elevation_res;
-	if (azimcnt) *azimcnt = m_azimuthal_res;
+	if (elev_cnt) *elev_cnt = m_elevation_res;
+	if (azim_cnt) *azim_cnt = m_azimuthal_res;
 
 	return m_p22;
 }
-const std::vector<double>&
-tabular_anisotropic::get_g1v(int *elevcnt, int *azimcnt) const
+const std::vector<float_t>&
+tabular_anisotropic::get_sigmav(int *elev_cnt, int *azim_cnt) const
 {
-	if (elevcnt) *elevcnt = m_elevation_res;
-	if (azimcnt) *azimcnt = m_azimuthal_res;
+	if (elev_cnt) *elev_cnt = m_elevation_res;
+	if (azim_cnt) *azim_cnt = m_azimuthal_res;
 
-	return m_g1;
+	return m_sigma;
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -3111,171 +3108,186 @@ tabular_anisotropic::get_g1v(int *elevcnt, int *azimcnt) const
  * tabulated microfacet slope distribution in order to retrieve
  * the scale and correlation parameters.
  */
-gaussian *tabular::to_gaussian(const tabular& tab)
+microfacet::params tabular::fit_beckmann_parameters(const tabular& tab)
 {
 	const int ntheta = 128;
-	double dtheta = sqrt(M_PI * 0.5) / (double)ntheta;
-	double nint = 0.0;
-	double sigma;
+	float_t dtheta = M_PI / (float_t)ntheta;
+	float_t nint = 0.0;
+	float_t alpha;
 
 	for (int i = 0; i < ntheta; ++i) {
-		double tmp = (double)i / (double)ntheta; // in [0,1)
-		double theta = tmp * sqrt(M_PI * 0.5);
-		double theta_sqr = theta * theta; // in [0, pi/2)
-		double c = cos(theta_sqr);
-		double pdf = tab.p22(dir(theta_sqr, 0.0));
-		double tan_theta_sqr = tan(theta_sqr); // first moment
-		double moment = tan_theta_sqr * tan_theta_sqr; // second moment
+		float_t u = (float_t)i / (float_t)ntheta; // in [0,1)
+		float_t theta_h = u * u * M_PI * 0.5;
+		float_t cos_theta_h = cos(theta_h);
+		float_t r_h = tan(theta_h);
+		float_t r_h_sqr = r_h * r_h;
+		float_t p22_r = tab.p22_radial(r_h_sqr);
 
-		nint+= (moment * theta) * (pdf * tan_theta_sqr) / (c * c);
+		nint+= (u * r_h_sqr * r_h * p22_r) / (cos_theta_h * cos_theta_h);
 	}
-	nint*= (2.0 * dtheta) * /* int_0^2pi cos^2 phi dphi */M_PI;
-	sigma = sqrt(nint);
+	nint*= dtheta * /* int_0^2pi cos^2 phi dphi */M_PI;
+	alpha = sqrt(2.0 * nint);
 
 #ifndef NVERBOSE
-	DJB_LOG("djb_verbose: Gaussian_sigma = %.9f\n", sigma);
+	DJB_LOG("djb_verbose: Beckmann_alpha = %.9f\n", alpha);
 #endif
 
-	return new gaussian(tab.m_gaf, sigma, *tab.m_fresnel, tab.m_shadow);
+	return microfacet::params::isotropic(alpha);
 }
 
-ggx *tabular::to_ggx(const tabular& tab)
+microfacet::params tabular::fit_ggx_parameters(const tabular& tab)
 {
 	const int ntheta = 128;
-	double dtheta = sqrt(M_PI * 0.5) / (double)ntheta;
-	double nint = 0.0;
-	double sigma;
+	float_t dtheta = M_PI / (float_t)ntheta;
+	float_t nint = 0.0;
+	float_t alpha;
 
 	for (int i = 0; i < ntheta; ++i) {
-		double tmp = (double)i / (double)ntheta; // in [0,1)
-		double theta = tmp * sqrt(M_PI * 0.5);
-		double theta_sqr = theta * theta; // in [0, pi/2)
-		double c = cos(theta_sqr);
-		double pdf = tab.p22(dir(theta_sqr, 0.0));
-		double tan_theta_sqr = tan(theta_sqr); // first moment
-		double moment = fabs(tan_theta_sqr); // second moment
+		float_t u = (float_t)i / (float_t)ntheta; // in [0,1)
+		float_t theta_h = u * u * M_PI * 0.5;
+		float_t cos_theta_h = cos(theta_h);
+		float_t r_h = tan(theta_h);
+		float_t r_h_sqr = r_h * r_h;
+		float_t p22_r = tab.p22_radial(r_h_sqr);
 
-		nint+= (moment * theta) * (pdf * tan_theta_sqr) / (c * c);
+		nint+= (u * r_h_sqr * p22_r) / (cos_theta_h * cos_theta_h);
 	}
-	nint*= (2.0 * dtheta) * /* int_0^2pi fabs(cos phi) dphi */4.0;
-	sigma = nint;
+	nint*= dtheta * /* int_0^2pi fabs(cos(phi)) dphi */4.0;
+	alpha = nint;
 #ifndef NVERBOSE
-	DJB_LOG("djb_verbose: GGX_sigma = %.9f\n", sigma);
+	DJB_LOG("djb_verbose: GGX_alpha = %.9f\n", alpha);
 #endif
 
-	return new ggx(tab.m_gaf, sigma, *tab.m_fresnel, tab.m_shadow);
+	return microfacet::params::isotropic(alpha);
 }
 
-// -------------------------------------------------------------------------------------------------
-/**
- * Direct Conversion to Parametric BRDFs
- *
- * The tabulated BRDFs may be converted directly to either a 
- * Gaussian or a GGX BRDF. For this, moments are computed from the 
- * tabulated microfacet slope distribution in order to retrieve
- * the scale and correlation parameters.
- */
-gaussian *tabular_anisotropic::to_gaussian(const tabular_anisotropic& tab)
+microfacet::params
+tabular_anisotropic::fit_beckmann_parameters(const tabular_anisotropic& tab)
 {
 	const int ntheta = 128;
 	const int nphi   = 512;
-	double dtheta = sqrt(M_PI * 0.5) / (double)ntheta;
-	double dphi = 2.0 * M_PI / (double)nphi;
-	double nint[3] = {0.0, 0.0, 0.0};
-	double r1, r2, rangle;
+	float_t dtheta = sqrt(M_PI * 0.5) / (float_t)ntheta;
+	float_t dphi = 2.0 * M_PI / (float_t)nphi;
+	float_t nint[5] = {0.0, 0.0, 0.0, 0.0, 0.0};
+	float_t mux, muy, alphax, alphay, rho;
 
 	for (int j = 0; j < nphi; ++j) {
-		double tmp = (double)j / (double)nphi; // in [0,1)
-		double phi = tmp * 2.0 * M_PI; // in [0,2pi)
-		double cos_phi = cos(phi);
-		double sin_phi = sin(phi);
-		double cos_phi_sqr = cos_phi * cos_phi;
-		double sin_phi_sqr = sin_phi * sin_phi;
+		float_t tmp = (float_t)j / (float_t)nphi; // in [0,1)
+		float_t phi = tmp * 2.0 * M_PI; // in [0,2pi)
+		float_t cos_phi = cos(phi);
+		float_t sin_phi = sin(phi);
+		float_t cos_phi_sqr = cos_phi * cos_phi;
+		float_t sin_phi_sqr = sin_phi * sin_phi;
 
 		for (int i = 0; i < ntheta; ++i) {
-			double tmp1 = (double)i / (double)ntheta; // in [0,1)
-			double theta = tmp1 * sqrt(M_PI * 0.5); // in [0,sqrt(pi/2))
-			double theta_sqr = theta * theta; // in [0, pi/2)
-			double p22 = tab.p22(dir(theta_sqr, phi));
-			double tan_theta = tan(theta_sqr);
-			double cos_theta = cos(theta_sqr);
-			double tan_theta_sqr = tan_theta * tan_theta;
-			double cos_theta_sqr = cos_theta * cos_theta;
-			double tmp2 = theta * p22 * tan_theta / cos_theta_sqr;
-			double e11 = tan_theta_sqr * cos_phi_sqr; // var1
-			double e22 = tan_theta_sqr * sin_phi_sqr; // var2
-			double e12 = tan_theta_sqr * cos_phi * sin_phi; // cov
+			float_t tmp1 = (float_t)i / (float_t)ntheta; // in [0,1)
+			float_t theta = tmp1 * sqrt(M_PI * 0.5); // in [0, sqrt(pi/2))
+			float_t theta_sqr = theta * theta; // in [0, pi/2)
+			float_t p22 = tab.p22_std_theta_phi(theta_sqr, phi);
+			float_t tan_theta = tan(theta_sqr);
+			float_t cos_theta = cos(theta_sqr);
+			float_t tan_theta_sqr = tan_theta * tan_theta;
+			float_t cos_theta_sqr = cos_theta * cos_theta;
+			float_t tmp2 = theta * p22 * tan_theta / cos_theta_sqr;
+			float_t e1 = -tan_theta * cos_phi; // mux
+			float_t e2 = -tan_theta * sin_phi; // muy
+			float_t e3 = tan_theta_sqr * cos_phi_sqr; // var1
+			float_t e4 = tan_theta_sqr * sin_phi_sqr; // var2
+			float_t e5 = tan_theta_sqr * cos_phi * sin_phi; // cov
 
-			nint[0]+= tmp2 * e11;
-			nint[1]+= tmp2 * e22;
-			nint[2]+= tmp2 * e12;
+			nint[0]+= tmp2 * e1;
+			nint[1]+= tmp2 * e2;
+			nint[2]+= tmp2 * e3;
+			nint[3]+= tmp2 * e4;
+			nint[4]+= tmp2 * e5;
 		}
 	}
-	for (int i = 0; i < 3; i++)
+	for (int i = 0; i < 5; i++)
 		nint[i]*= 2.0 * dtheta * dphi;
-	covariance_to_ellipse(nint[0], nint[1], nint[2], &r1, &r2, &rangle);
+	mux = nint[0];
+	muy = nint[1];
+	alphax = sqrt((float_t)2.0 * (nint[2] - mux * mux));
+	alphay = sqrt((float_t)2.0 * (nint[3] - muy * muy));
+	rho = 2.0 * (nint[4] - mux * muy) / (alphax * alphay);
 
 #ifndef NVERBOSE
-	DJB_LOG("djb_verbose: Gaussian_params = %.3f %.3f %.3f\n", r1, r2, rangle);
+	DJB_LOG(
+		"djb_verbose: Beckmann params = %.9f %.9f %.9f %.9f %.9f\n", 
+		alphax,
+		alphay,
+		rho,
+		mux,
+		muy
+	);
 #endif
 
-	return new gaussian(tab.m_gaf, r1, r2, rangle, *tab.m_fresnel, tab.m_shadow);
+	return microfacet::params::pdfparams(alphax, alphay, rho, mux, muy);
 }
 
-ggx *tabular_anisotropic::to_ggx(const tabular_anisotropic& tab)
+microfacet::params
+tabular_anisotropic::fit_ggx_parameters(const tabular_anisotropic& tab)
 {
 	const int ntheta = 128;
 	const int nphi   = 512;
-	double dtheta = sqrt(M_PI * 0.5) / (double)ntheta;
-	double dphi = 2.0 * M_PI / (double)nphi;
-	double nint[4] = {0.0, 0.0, 0.0, 0.0};
-	double var1, var2, cov;
-	double r1, r2, rangle;
+	float_t dtheta = sqrt(M_PI * 0.5) / (float_t)ntheta;
+	float_t dphi = 2.0 * M_PI / (float_t)nphi;
+	float_t nint[5] = {0.0, 0.0, 0.0, 0.0, 0.0};
+	float_t mux, muy, alphax, alphay, rho;
 
 	for (int j = 0; j < nphi; ++j) {
-		double tmp = (double)j / (double)nphi; // in [0,1)
-		double phi = tmp * 2.0 * M_PI; // in [0,2pi)
-		double cos_phi = cos(phi);
-		double sin_phi = sin(phi);
+		float_t tmp = (float_t)j / (float_t)nphi; // in [0,1)
+		float_t phi = tmp * 2.0 * M_PI; // in [0,2pi)
+		float_t cos_phi = cos(phi);
+		float_t sin_phi = sin(phi);
 
 		for (int i = 0; i < ntheta; ++i) {
-			double tmp1 = (double)i / (double)ntheta; // in [0,1)
-			double theta = tmp1 * sqrt(M_PI * 0.5); // in [0,sqrt(pi/2))
-			double theta_sqr = theta * theta; // in [0, pi/2)
-			double p22 = tab.p22(dir(theta_sqr, phi));
-			double tan_theta = tan(theta_sqr);
-			double cos_theta = cos(theta_sqr);
-			double cos_theta_sqr = cos_theta * cos_theta;
-			double tmp2 = theta * p22 * tan_theta / cos_theta_sqr;
-			double e11 = fabs(tan_theta * cos_phi); // scale1
-			double e22 = fabs(tan_theta * sin_phi); // scale2
-			double e12 = cos_phi * sin_phi; // co-scale
-			double e21 = cos_phi * cos_phi; // co-scale
+			float_t tmp1 = (float_t)i / (float_t)ntheta; // in [0,1)
+			float_t theta = tmp1 * sqrt(M_PI * 0.5); // in [0, sqrt(pi/2))
+			float_t theta_sqr = theta * theta; // in [0, pi/2)
+			float_t p22 = tab.p22_std_theta_phi(theta_sqr, phi);
+			float_t tan_theta = tan(theta_sqr);
+			float_t cos_theta = cos(theta_sqr);
+			float_t cos_theta_sqr = cos_theta * cos_theta;
+			float_t tmp2 = theta * p22 * tan_theta / cos_theta_sqr;
+			float_t e1 = -tan_theta * cos_phi; // mux
+			float_t e2 = -tan_theta * sin_phi; // muy
+			float_t e3 = fabs(e1); // var1
+			float_t e4 = fabs(e2); // var2
+			float_t e5 = 0; // TODO
 
-			nint[0]+= tmp2 * e11;
-			nint[1]+= tmp2 * e22;
-			nint[2]+= tmp2 * e12;
-			nint[3]+= tmp2 * e21;
+			nint[0]+= tmp2 * e1;
+			nint[1]+= tmp2 * e2;
+			nint[2]+= tmp2 * e3;
+			nint[3]+= tmp2 * e4;
+			nint[4]+= tmp2 * e5;
 		}
 	}
-	for (int i = 0; i < 4; i++)
+	for (int i = 0; i < 5; i++)
 		nint[i]*= 2.0 * dtheta * dphi;
-	var1 = nint[0] * nint[0];
-	var2 = nint[1] * nint[1];
-	cov = var1 * nint[2] / (nint[2] * nint[2] + nint[3] * nint[3]);
-	covariance_to_ellipse(var1, var2, cov, &r1, &r2, &rangle);
+	mux = nint[0];
+	muy = nint[1];
+	alphax = sqrt(nint[2] * nint[2] - mux * mux);
+	alphay = sqrt(nint[3] * nint[3] - muy * muy);
+	rho = 0.0; // TODO
 
 #ifndef NVERBOSE
-	DJB_LOG("djb_verbose: Gaussian_params = %.3f %.3f %.3f\n", r1, r2, rangle);
+	DJB_LOG(
+		"djb_verbose: GGX params = %.9f %.9f %.9f %.9f %.9f\n", 
+		alphax,
+		alphay,
+		rho,
+		mux,
+		muy
+	);
 #endif
 
-	return new ggx(tab.m_gaf, r1, r2, rangle, *tab.m_fresnel, tab.m_shadow);
+	return microfacet::params::pdfparams(alphax, alphay, rho, mux, muy);
 }
 
 // *************************************************************************************************
 // Shifted Gamma Distribution API implementation
 
-const sgd::data sgd::s_data[100] = {
+const sgd::data sgd::s_data[] = {
 	{ "alum-bronze", "alum-bronze", { 0.0478786, 0.0313514, 0.0200638 }, { 0.0364976, 0.664975, 0.268836 }, { 0.014832, 0.0300126, 0.0490339 }, { 0.459076, 0.450056, 0.529272 }, { 6.05524, 0.235756, 0.580647 }, { 5.05524, 0.182842, 0.476088 }, { 46.3841, 24.5961, 14.8261 }, { 2.60672, 2.97371, 2.7827 }, { 1.12717e-07, 1.06401e-07, 5.27952e-08 }, { 47.783, 36.2767, 31.6066 }, { 0.205635, 0.066289, -0.0661091 }, { 0.100735, 0.0878706, 0.0861907 } },
 	{ "alumina-oxide", "alumina-oxide", { 0.316358, 0.292248, 0.25416 }, { 0.00863128, 0.00676832, 0.0103309 }, { 0.000159222, 0.000139421, 0.000117714 }, { 0.377727, 0.318496, 0.402598 }, { 0.0300766, 1.70375, 1.96622 }, { -0.713784, 0.70375, 1.16019 }, { 4381.96, 5413.74, 5710.42 }, { 3.31076, 4.93831, 2.84538 }, { 6.72897e-08, 1.15769e-07, 6.32199e-08 }, { 354.275, 367.448, 414.581 }, { 0.52701, 0.531166, 0.53301 }, { 0.213276, 0.147418, 0.27746 } },
 	{ "aluminium", "aluminium", { 0.0305166, 0.0358788, 0.0363463 }, { 0.0999739, 0.131797, 0.0830361 }, { 0.0012241, 0.000926487, 0.000991844 }, { 0.537669, 0.474562, 0.435936 }, { 0.977854, 0.503108, 1.77905 }, { -0.0221457, -0.0995445, 0.77905 }, { 449.321, 658.044, 653.86 }, { 8.2832e-07, 9.94692e-08, 6.11887e-08 }, { 3.54592e-07, 16.0175, 15.88 }, { 23.8656, 10.6911, 9.69801 }, { -0.510356, 0.570179, 0.566156 }, { 0.303567, 0.232628, 0.441578 } },
@@ -3379,9 +3391,9 @@ const sgd::data sgd::s_data[100] = {
 };
 
 static double 
-sgd__g1(const dir& k, double theta0, double c, double k_, double lambda)
+sgd__g1(const vec3& k, double theta0, double c, double k_, double lambda)
 {
-	double tmp1 = max(0.0, k.theta - theta0);
+	double tmp1 = max(0.0, acos(k.z) - theta0);
 	double tmp2 = 1.0 - exp(c * pow(tmp1, k_));
 	double tmp3 = 1.0 + lambda * tmp2;
 	return min(1.0, max(0.0, tmp3));
@@ -3402,7 +3414,7 @@ static double sgd__ndf(double cos_theta_h, double alpha, double p, double kap)
 sgd::sgd(const char *name): m_fresnel(NULL), m_data(NULL)
 {
 	bool found = false;
-	for (int i = 0; i < 100; ++i) {
+	for (int i = 0; i < (int)(sizeof(sgd::s_data) / sizeof(sgd::data)); ++i) {
 		if (!strcmp(s_data[i].name, name)
 		    || !strcmp(s_data[i].otherName, name)) {
 			m_data = &s_data[i];
@@ -3417,30 +3429,29 @@ sgd::sgd(const char *name): m_fresnel(NULL), m_data(NULL)
 
 // -------------------------------------------------------------------------------------------------
 // SGD eval
-vec3 sgd::eval(const dir& i, const dir& o) const {
-	if (i.theta < M_PI * 0.5) {
-		dir h, d;
-		std_coords_to_half_diff_coords(i, o, h, d);
-
+vec3 sgd::eval(const vec3& i, const vec3& o, const void *user_param) const
+{
+	if (i.z > 0.0 && o.z > 0.0) {
+		vec3 h = normalize(i + o);
 		const vec3 Ks = vec3::from_raw(m_data->rhoS);
 		const vec3 Kd = vec3::from_raw(m_data->rhoD);
-		vec3 F = eval_fresnel(d.theta);
-		vec3 G = gaf(i, o, h);
+		vec3 F = fresnel(sat(dot(i, h)));
+		vec3 G = gaf(h, i, o);
 		vec3 D = ndf(h);
 
-		return ((Kd + Ks * (F * D * G) / (cos(i.theta) * cos(o.theta))) / M_PI);
+		return ((Kd + Ks * (F * D * G) / (i.z * o.z)) / M_PI);
 	}
 	return vec3(0);
 }
 
 // -------------------------------------------------------------------------------------------------
 // SGD Shadowing
-vec3 sgd::gaf(const dir& i, const dir& o, const dir& h) const
+vec3 sgd::gaf(const vec3& h, const vec3& i, const vec3& o) const
 {
 	return g1(i) * g1(o);
 }
 
-vec3 sgd::g1(const dir& k) const
+vec3 sgd::g1(const vec3& k) const
 {
 	double g1[3];
 
@@ -3453,9 +3464,9 @@ vec3 sgd::g1(const dir& k) const
 
 // -------------------------------------------------------------------------------------------------
 // SGD NDF
-vec3 sgd::ndf(const dir& h) const
+vec3 sgd::ndf(const vec3& h) const
 {
-	double cos_theta_h = cos(h.theta);
+	double cos_theta_h = h.z;
 	double ndf[3];
 
 	for (int i = 0; i < 3; ++i)
@@ -3469,8 +3480,12 @@ vec3 sgd::ndf(const dir& h) const
 // *************************************************************************************************
 // ABC Distribution API implementation
 
-const abc::data abc::s_data[8] = {
+const abc::data abc::s_data[] = {
+	{ "alum-bronze", "alum-bronze", { 0.0245, 0.0223, 0.0162 }, { 51.714552, 37.932695, 27.373094 }, 10482.133785, 0.816737, 2.236525},
 	{ "alumina-oxide", "alumina-oxide", { 0.3109, 0.2887, 0.2534 }, { 2191.683921, 1851.525468, 2064.303439 }, 97381.554876, 1.393850, 1.437706},
+	{ "aluminium", "aluminium", { 0.0000, 0.0020, 0.0056 }, { 1137.956786, 1090.751821, 1113.879207 }, 218716.597540, 1.092006, 6.282688},
+	{ "aventurnine", "aventurnine", { 0.0529, 0.0607, 0.0525 }, { 1835.591346, 1594.715779, 1585.084021 }, 324913.384015, 1.110341, 1.403899},
+	{ "beige-fabric", "fabric-beige", { 0.2025, 0.1321, 0.1106 }, { 0.146439, 0.133698, 0.120796 }, 3442009.472608, 0.083210, 10.406549},
 	{ "blue-acrylic", "acrylic-blue", { 0.0111, 0.0351, 0.1043 }, { 1191.397279, 1099.257252, 1082.125405 }, 255868.959838, 1.084736, 1.475061},
 	{ "blue-metallic-paint", "metallic-blue", { 0.0038, 0.0010, 0.0092 }, { 0.495104, 0.469843, 1.097868 }, 48.572060, 1.702520, 9.024582},
 	{ "color-changing-paint1", "", { 0.0022, 0.0026, 0.0053 }, { 32.486814, 34.621836, 36.775240 }, 2456.161812, 1.388325, 2.066753},
@@ -3492,7 +3507,7 @@ static double abc__ndf(double cos_theta_h, double A, double B, double C)
 abc::abc(const char *name): m_fresnel(NULL), m_data(NULL)
 {
 	bool found = false;
-	for (int i = 0; i < 100; ++i) {
+	for (int i = 0; i < (int)(sizeof(abc::s_data) / sizeof(abc::data)); ++i) {
 		if (!strcmp(s_data[i].name, name)
 		    || !strcmp(s_data[i].otherName, name)) {
 			m_data = &s_data[i];
@@ -3506,62 +3521,35 @@ abc::abc(const char *name): m_fresnel(NULL), m_data(NULL)
 
 // -------------------------------------------------------------------------------------------------
 // ABC eval
-vec3 abc::eval(const dir& i, const dir& o) const {
-	if (i.theta < M_PI * 0.5) {
-		dir h, d;
-		std_coords_to_half_diff_coords(i, o, h, d);
-
+vec3 abc::eval(const vec3& i, const vec3& o, const void *user_param) const
+{
+	if (i.z > 0.0 && o.z > 0.0) {
+		vec3 h = normalize(i + o);
 		const vec3 Kd = vec3::from_raw(m_data->kD);
-		vec3 F = eval_fresnel(d.theta);
-		double G = gaf(i, o, h);
+		vec3 F = fresnel(sat(dot(i, h)));
+		double G = gaf(h, i, o);
 		vec3 D = ndf(h);
 
-		return (Kd / M_PI  + (F * D * G) / (M_PI * cos(i.theta) * cos(o.theta)));
+		return (Kd / M_PI  + (F * D * G) / (M_PI * i.z * o.z));
 	}
 	return vec3(0);
 }
 
 // -------------------------------------------------------------------------------------------------
 // ABC Shadowing
-double abc::gaf(const dir& i, const dir& o, const dir& h) const
+float_t abc::gaf(const vec3& h, const vec3& i, const vec3& o) const
 {
-	if (h.theta < 0.5 * M_PI && o.theta < 0.5 * M_PI) {
-		double cos_theta_h = cos(h.theta);
-		double sin_theta_h = sin(h.theta);
-		double cos_theta_o = cos(o.theta);
-		double cos_theta_d = cos_theta_h * cos_theta_o
-		                   + cos(h.phi - o.phi) * sin_theta_h 
-		                   * sin(o.theta);
-		double tmp = 2.0 * cos_theta_o * cos_theta_h / cos_theta_d;
-		double masking = min(1.0, tmp);
+	float_t g1_i = min((float_t)1.0, (float_t)2.0 * (h.z * i.z / dot(h, i)));
+	float_t g1_o = min((float_t)1.0, (float_t)2.0 * (h.z * o.z / dot(h, o)));
 
-		if (/*m_shadow*/true) {
-			if (i.theta < 0.5 * M_PI) {
-				double cos_theta_i = cos(i.theta);
-				double cos_theta_d = cos_theta_h * cos_theta_i
-				                   + cos(h.phi - i.phi) * sin_theta_h
-				                   * sin(i.theta);
-
-				double tmp = 2.0 * cos_theta_i * cos_theta_h / cos_theta_d;
-				double masking_and_shadowing = min(masking, tmp);
-
-				return masking_and_shadowing;
-			}
-
-			return 0.0; // below horizon
-		}
-
-		return masking;
-	}
-
-	return 0.0; // below horizon
+	return min(g1_i, g1_o);
 }
 
 // -------------------------------------------------------------------------------------------------
 // ABC NDF
-vec3 abc::ndf(const dir& h) const
+vec3 abc::ndf(const vec3& h) const
 {
-	double cos_theta_h = cos(h.theta);
+	double cos_theta_h = h.z;
 	double ndf[3];
 
 	for (int i = 0; i < 3; ++i)
@@ -3569,7 +3557,6 @@ vec3 abc::ndf(const dir& h) const
 
 	return vec3::from_raw(ndf);
 }
-
 
 } // namespace djb
 
