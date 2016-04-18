@@ -14,6 +14,8 @@ Here's a quick list of features
 - Support for MERL and UTIA fitting with power iterations
 - Added C++ tools to create LEAN/LEADR maps from displacement maps and normal 
   maps (see utils/ folder)
+- Support for loading and rendering SGD and ABC BRDF models
+- Support for loading and rendering of MERL and UTIA datasets
 
 Those who wish to get the code to reproduce the results from my EGSR 2015 
 paper entitled "Extracting Microfacet-based BRDF Parameters from Arbitrary 
