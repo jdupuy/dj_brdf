@@ -2492,7 +2492,7 @@ void tabular::compute_p22_smith(const brdf& brdf, int res)
 			float_t nint = 0.0;
 
 			for (float_t phi_h = 0.0; phi_h < 2.0 * M_PI; phi_h+= dphi_h)
-				nint+= max((float_t)1.0, tan_product * cos(phi_h));
+				nint+= max((float_t)1, tan_product * (float_t)cos(phi_h));
 			nint*= dphi_h;
 
 			km(j, i) = theta * kji_tmp * nint * tan_theta_h
