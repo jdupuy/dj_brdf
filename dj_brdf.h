@@ -2479,7 +2479,7 @@ void tabular::compute_p22_smith(const brdf& brdf, int res)
 		float_t tan_theta_o = tan(theta_o);
 		vec3 fr = brdf.eval(vec3(theta_o, 0.0), vec3(theta_o, 0.0));
 		float_t fr_i = fr.intensity();
-		float_t kji_tmp = (dtheta * pow(cos_theta_o, 6.0)) * (8.0 * fr_i);
+		float_t kji_tmp = (dtheta * pow(cos_theta_o, (float_t)6.0)) * (8.0 * fr_i);
 
 		for (int j = 0; j < cnt; ++j) {
 			const float_t dphi_h = M_PI / 180.0;
@@ -2492,7 +2492,7 @@ void tabular::compute_p22_smith(const brdf& brdf, int res)
 			float_t nint = 0.0;
 
 			for (float_t phi_h = 0.0; phi_h < 2.0 * M_PI; phi_h+= dphi_h)
-				nint+= max(1.0, tan_product * cos(phi_h));
+				nint+= max((float_t)1.0, tan_product * cos(phi_h));
 			nint*= dphi_h;
 
 			km(j, i) = theta * kji_tmp * nint * tan_theta_h
@@ -2531,7 +2531,7 @@ void tabular_anisotropic::compute_p22_smith(const brdf& brdf)
 		float_t yo = sin_theta * sin(phi);
 		vec3 fr = brdf.eval(vec3(theta, phi), vec3(theta, phi));
 		float_t fr_i = fr.intensity();
-		float_t kji_tmp1 = (dtheta * dphi) * (4.0 * fr_i * pow(zo, 5.0));
+		float_t kji_tmp1 = (dtheta * dphi) * (4.0 * fr_i * pow(zo, (float_t)5.0));
 
 		for (int j2 = 0; j2 < h; ++j2)
 		for (int j1 = 0; j1 < w; ++j1) {
