@@ -177,7 +177,9 @@ public:
 		/* set up the BRDF */
 		float baseRoughness = 1.f;
 		if (props.hasProperty("merl")) { // fit a MERL BRDF
-			djb::merl merl(props.getString("merl", "").c_str());
+			fs::path filename = 
+				Thread::getThread()->getFileResolver()->resolve(props.getString("merl"));
+			djb::merl merl(filename.string().c_str());
 			djb::tabular *tab = new djb::tabular(merl, 90);
 			djb::microfacet::params params =
 				djb::tabular::fit_beckmann_parameters(*tab);

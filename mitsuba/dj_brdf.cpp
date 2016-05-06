@@ -206,7 +206,9 @@ public:
 		/* set up the BRDF */
 		float baseRoughness = 1.f;
 		if (props.hasProperty("merl")) { // fit a MERL BRDF
-			djb::merl merl(props.getString("merl", "").c_str());
+			fs::path filename = 
+				Thread::getThread()->getFileResolver()->resolve(props.getString("merl"));
+			djb::merl merl(filename.string().c_str());
 			djb::tabular *tab = new djb::tabular(merl, 90);
 
 			if (m_mitsubaFresnel) tab->set_fresnel(djb::fresnel::ideal());
@@ -230,7 +232,9 @@ public:
 				delete tab;
 			}
 		} else if (props.hasProperty("utia")) { // fit a UTIA BRDF
-			djb::utia utia(props.getString("utia", "").c_str());
+			fs::path filename = 
+				Thread::getThread()->getFileResolver()->resolve(props.getString("utia"));
+			djb::utia utia(filename.string().c_str());
 			djb::tabular_anisotropic *tab = new djb::tabular_anisotropic(utia, 90, 90);
 
 			if (m_mitsubaFresnel) tab->set_fresnel(djb::fresnel::ideal());
