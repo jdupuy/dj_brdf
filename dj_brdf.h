@@ -496,7 +496,8 @@ class sgd : public brdf {
 public:
 	sgd(const char *name);
 	~sgd() {delete m_fresnel;}
-	vec3 eval(const vec3& i, const vec3& o, const void *user_param) const;
+	vec3 eval(const vec3& i, const vec3& o,
+	          const void *user_param = NULL) const;
 	vec3 ndf(const vec3& h) const;
 	vec3 gaf(const vec3& h, const vec3& i, const vec3& o) const;
 	vec3 g1(const vec3& k) const;
@@ -520,7 +521,8 @@ class abc : public brdf {
 public:
 	abc(const char *name);
 	~abc() {delete m_fresnel;}
-	vec3 eval(const vec3& i, const vec3& o, const void *user_param) const;
+	vec3 eval(const vec3& i, const vec3& o,
+	          const void *user_param = NULL) const;
 	vec3 ndf(const vec3& h) const;
 	float_t gaf(const vec3& h, const vec3& i, const vec3& o) const;
 	vec3 fresnel(float_t cos_theta_d) const {return m_fresnel->eval(cos_theta_d);}
