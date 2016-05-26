@@ -645,7 +645,7 @@ static void xyz_to_theta_phi(const vec3& p, float_t *theta, float_t *phi)
 		(*phi) = 0.0;
 	} else {
 		(*theta) = acos(p.z);
-		(*phi) = (p.z != 0.0) ? atan2(p.y, p.x) : 0.0;
+		(*phi) = atan2(p.y, p.x);
 	}
 }
 
