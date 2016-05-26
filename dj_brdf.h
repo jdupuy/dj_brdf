@@ -55,8 +55,8 @@ struct exc : public std::exception {
 
 /* Standalone vec3 utility */
 struct vec3 {
-	static vec3 from_raw(const double *v) {return vec3(v[0], v[1], v[2]);}
-	static vec3 from_raw(const float *v) {return vec3(v[0], v[1], v[2]);}
+	static vec3 from_raw(const double *v) {return vec3((float_t)v[0], (float_t)v[1], (float_t)v[2]);}
+	static vec3 from_raw(const float *v) {return vec3((float_t)v[0], (float_t)v[1], (float_t)v[2]);}
 	static const float_t *to_raw(const vec3& v) {return &v.x;}
 	explicit vec3(float_t x = 0): x(x), y(x), z(x) {}
 	vec3(float_t x, float_t y, float_t z) : x(x), y(y), z(z) {}
@@ -553,7 +553,11 @@ public:
 #endif
 
 #ifndef M_PI
-#define M_PI 3.1415926535897932384626433832795
+#	define M_PI 3.1415926535897932384626433832795
+#endif
+
+#ifdef _MSC_VER
+#	pragma warning(disable: 4244) // possible loss of data
 #endif
 
 namespace djb {
