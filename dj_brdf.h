@@ -25,6 +25,11 @@ by Jonathan Dupuy
           => the parameter 'i' denotes the direction towards the light source 
           => the parameter 'o' denotes the direction towards the viewer
 
+   ACKNOWLEDGEMENTS
+       - Jiri Filip (provided code for djb::utia)
+       - Joel Kronander (provided parameters for djb::abc)
+       - Mahdi Bagher, Cyril Soler, Nicolas Holzschuch (provided parameters for djb::sgd)
+
 */
 
 #ifndef DJB_INCLUDE_DJ_BRDF_H
@@ -1138,6 +1143,11 @@ vec3 utia::eval(const vec3& i, const vec3& o, const void *user_param) const
 
 			RGB[isp]+= w * (float_t)m_samples[idx];
 		}
+		if (RGB[isp] > 0.0375)
+			RGB[isp] = pow((float_t)(RGB[isp] + 0.055)/1.055, (float_t)2.4); 
+		else
+			RGB[isp]/= (float_t)12.92;
+		RGB[isp]*= (float_t)100.0; 
 	}
 	return vec3(
 		max((float_t)0, RGB[0]),
@@ -1147,17 +1157,10 @@ vec3 utia::eval(const vec3& i, const vec3& o, const void *user_param) const
 }
 
 //---------------------------------------------------------------------------
-// The UTIA BRDF generates more energy than it receives, and contains 
-// negative values for some materials. Therefore, we clamp and 
-// scale the data.
+// Some UTIA BRDFs contain negative values for some materials. Therefore, we 
+// clamp them. The data also needs to be scaled.
 void utia::normalize()
 {
-	int xres = 90;
-	int yres = 360;
-	float_t dtheta = M_PI * 0.5 / (float_t)xres;
-	float_t dphi = 2.0 * M_PI / (float_t)yres;
-	djb::vec3 nint(0);
-
 	// clamp to zero
 	for (int i = 0; i < (int)m_samples.size(); ++i) {
 #ifndef NVERBOSE
@@ -1168,28 +1171,9 @@ void utia::normalize()
 	}
 
 	// scale
-	for (int i = 0; i < xres; ++i)
-	for (int j = 0; j < yres; ++j) {
-		float_t tmp1 = (float_t)i / (float_t)xres;
-		float_t tmp2 = (float_t)j / (float_t)yres;
-		float_t theta = tmp1 * M_PI * 0.5;
-		float_t phi = tmp2 * 2.0 * M_PI;
-		vec3 o(0, 0);
-		vec3 i(theta, phi);
-		nint+= eval(i, o) * cos(theta) * sin(theta);
-	}
-	nint*= dtheta * dphi;
-
-	float_t mag = max3(nint.x, nint.y, nint.z) * /* magic cst */7.0;
-	if (mag > 1.0) {
-		float_t k = 1.0 / mag;
-		for (int i = 0; i < (int)m_samples.size(); ++i)
-			m_samples[i]*= k;
-
-#ifndef NVERBOSE
-		DJB_LOG("djb_verbose: UTIA magnitude = %.9f\n", mag);
-#endif
-	}
+	float_t k = /* Magic constant provided by Jiri Filip */ 1.f / 140.f;
+	for (int i = 0; i < (int)m_samples.size(); ++i)
+		m_samples[i]*= k;
 }
 
 // *************************************************************************************************
