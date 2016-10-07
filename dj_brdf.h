@@ -1616,7 +1616,7 @@ microfacet::g1(
 ) const {
 	float_t g1_local_test = dot(k, params.m_n);
 	if (g1_local_test > 0.0)
-		return k.z / sigma(k);
+		return k.z / sigma(k, params);
 	return 0.0;
 }
 
