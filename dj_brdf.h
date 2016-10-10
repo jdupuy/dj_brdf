@@ -32,11 +32,24 @@ by Jonathan Dupuy
 
 */
 
+#define DJB_USE_OPENEXR 1
 #ifndef DJB_INCLUDE_DJ_BRDF_H
 #define DJB_INCLUDE_DJ_BRDF_H
 
 #include <vector>
 #include <string>
+
+
+/* OpenEXR file support (for BTF-UTIA) */
+#if DJB_USE_OPENEXR
+ #include <OpenEXR/ImfRgbaFile.h>
+ #include <OpenEXR/ImfArray.h>
+#endif
+
+/* PNG file support (for BTF-UTIA) */
+#if DJB_USE_LODEPNG
+ #include <lodepng.h>
+#endif
 
 namespace djb {
 
@@ -49,7 +62,7 @@ typedef float float_t;
 #ifndef DJB_EPSILON
 #define DJB_EPSILON (float_t)1e-4
 #endif
-
+ 
 /* Exception API */
 struct exc : public std::exception {
 	exc(const char *fmt, ...);
@@ -57,7 +70,7 @@ struct exc : public std::exception {
 	const char *what() const throw() {return m_str.c_str();}
 	std::string m_str;
 };
-
+	 
 /* Standalone vec3 utility */
 struct vec3 {
 	static vec3 from_raw(const double *v) {return vec3((float_t)v[0], (float_t)v[1], (float_t)v[2]);}
@@ -70,6 +83,26 @@ struct vec3 {
 	float_t x, y, z;
 };
 
+
+/**
+ * Utility functions for color corrections
+ * from Pascal Getreuer 2005-2010 <getreuer@gmail.com>
+ * http://www.getreuer.info/home/colorspace
+ */
+ class colorspace {
+ public:
+	 static void Xyz2Rgb(float_t X, float_t Y, float_t Z, float_t *R, float_t *G, float_t *B) {
+		 *R = (float_t) std::max(0.0, 3.2406 * X - 1.5372 * Y - 0.4986 * Z);
+		 *G = (float_t) std::max(0.0, -0.9689 * X + 1.8758 * Y + 0.0415 * Z);
+		 *B = (float_t) std::max(0.0, 0.0557 * X - 0.2040 * Y + 1.0570 * Z);
+	 }
+	 
+	 static float_t sRgb2Rgb(float_t sRgb) {
+		 return (sRgb < 0.0404482362771076) ? sRgb/12.92 : pow((sRgb + 0.055)/1.055, 2.4);
+	 }
+ };
+
+ 
 /* BRDF interface */
 class brdf {
 public:
@@ -132,16 +165,49 @@ public:
 	const std::vector<double>& get_samples() const {return m_samples;}
 };
 
-/* UTIA BRDF */
+/* UTIA BRDF */ 
+#define DJB__UTIA_STEP_T  15.0
+#define DJB__UTIA_STEP_P   7.5
+#define DJB__UTIA_NTI      6
+#define DJB__UTIA_NPI     48
+#define DJB__UTIA_NTV      6
+#define DJB__UTIA_NPV     48
+#define DJB__UTIA_PLANES   3
+
 class utia : public brdf {
+ public:
+	enum FileFormat {
+		FileFormat_BIN,
+		FileFormat_EXR,
+		FileFormat_PNG
+	};
+
+	enum ColorFormat {
+		ColorFormat_sRGB,
+		ColorFormat_XYZ
+	};
+
+ private:
 	std::vector<double> m_samples;
-	double m_norm;
+ 	float m_step_t, m_step_p;
+	int m_nti, m_ntv, m_npi, m_npv, m_planes; //!\brief BRDF dimensions
+	FileFormat m_fileFormat;
+	ColorFormat m_colorFormat;
 public:
-	utia(const char *filename);
+	utia(const char *filename,
+		 float step_t = DJB__UTIA_STEP_T,
+		 float step_p = DJB__UTIA_STEP_P,
+		 int nti = DJB__UTIA_NTI,
+		 int ntv = DJB__UTIA_NTV,
+		 FileFormat fileFormat = FileFormat_BIN,
+		 ColorFormat colorFormat = ColorFormat_sRGB);
+	
 	vec3 eval(const vec3& in, const vec3& out,
 	          const void *user_param = NULL) const;
 	const std::vector<double>& get_samples() const {return m_samples;}
-private:
+ private:
+	void loadFile(const char *filename);
+	void correctColorSpace();
 	void normalize();
 };
 
@@ -1026,36 +1092,32 @@ vec3 merl::eval(const vec3& i, const vec3& o, const void *user_param) const
 // *************************************************************************************************
 // UTIA API implementation (based on Jiri Filip's implementation)
 
-#define DJB__UTIA_STEP_T  15.0
-#define DJB__UTIA_STEP_P   7.5
-#define DJB__UTIA_NTI      6
-#define DJB__UTIA_NPI     48
-#define DJB__UTIA_NTV      6
-#define DJB__UTIA_NPV     48
-#define DJB__UTIA_PLANES   3
-
 //---------------------------------------------------------------------------
 // Read UTIA BRDF data
-utia::utia(const char *filename)
+utia::utia(const char *filename,
+		   float step_t, float step_p, int nti, int ntv,
+		   FileFormat fileFormat, ColorFormat colorFormat) :
+m_step_t(step_t),
+	m_step_p(step_p),
+	m_nti(nti),
+	m_ntv(ntv),
+	m_npi((int)(360.0 / step_p)),
+	m_npv((int)(360.0 / step_p)),
+	m_planes(DJB__UTIA_PLANES),
+	m_fileFormat(fileFormat),
+	m_colorFormat(colorFormat)
 {
-	// open file
-	std::fstream f(filename, std::fstream::in | std::fstream::binary);
-	if (!f.is_open())
-		throw exc("djb_error: Failed to open %s\n", filename);
 
 	// allocate memory
-	int cnt = DJB__UTIA_PLANES * DJB__UTIA_NTI * DJB__UTIA_NPI
-	        * DJB__UTIA_NTV * DJB__UTIA_NPV;
+	int cnt = m_planes * m_nti * m_npi * m_ntv * m_npv;
 	m_samples.resize(cnt);
 
 	// read data
-	f.read((char *)&m_samples[0], sizeof(double) * cnt);
-
+	loadFile(filename);
+	correctColorSpace();
+	
 	// normalize
-	m_norm = 1.0;
 	normalize();
-	if (f.fail())
-		throw exc("djb_error: Reading %s failed\n", filename);
 }
 
 //---------------------------------------------------------------------------
@@ -1079,81 +1141,183 @@ vec3 utia::eval(const vec3& i, const vec3& o, const void *user_param) const
 	while (phi_o >= 360) {phi_o-= 360.0;}
 
 	int iti[2], itv[2], ipi[2], ipv[2];
-	iti[0] = (int)floor(theta_i / DJB__UTIA_STEP_T);
+	iti[0] = (int)floor(theta_i / m_step_t);
 	iti[1] = iti[0] + 1;
-	if(iti[0] > DJB__UTIA_NTI - 2) {
-		iti[0] = DJB__UTIA_NTI - 2;
-		iti[1] = DJB__UTIA_NTI - 1;
+	if(iti[0] > m_nti - 2) {
+		iti[0] = m_nti - 2;
+		iti[1] = m_nti - 1;
 	}
-	itv[0] = (int)floor(theta_o / DJB__UTIA_STEP_T);
+	itv[0] = (int)floor(theta_o / m_step_t);
 	itv[1] = itv[0] + 1;
-	if(itv[0] > DJB__UTIA_NTV - 2) {
-		itv[0] = DJB__UTIA_NTV - 2;
-		itv[1] = DJB__UTIA_NTV - 1;
+	if(itv[0] > m_ntv - 2) {
+		itv[0] = m_ntv - 2;
+		itv[1] = m_ntv - 1;
 	}
 
-	ipi[0] = (int)floor(phi_i / DJB__UTIA_STEP_P);
+	ipi[0] = (int)floor(phi_i / m_step_p);
 	ipi[1] = ipi[0] + 1;
-	ipv[0] = (int)floor(phi_o / DJB__UTIA_STEP_P);
+	ipv[0] = (int)floor(phi_o / m_step_p);
 	ipv[1] = ipv[0] + 1;
 
 	float_t sum;
 	float_t wti[2], wtv[2], wpi[2], wpv[2];
-	wti[1] = theta_i - (float_t)(DJB__UTIA_STEP_T * iti[0]);
-	wti[0] = (float_t)(DJB__UTIA_STEP_T * iti[1]) - theta_i;
+	wti[1] = theta_i - (float_t)(m_step_t * iti[0]);
+	wti[0] = (float_t)(m_step_t * iti[1]) - theta_i;
 	sum = wti[0] + wti[1];
 	wti[0]/= sum;
 	wti[1]/= sum;
-	wtv[1] = theta_o - (float_t)(DJB__UTIA_STEP_T * itv[0]);
-	wtv[0] = (float_t)(DJB__UTIA_STEP_T * itv[1]) - theta_o;
+	wtv[1] = theta_o - (float_t)(m_step_t * itv[0]);
+	wtv[0] = (float_t)(m_step_t * itv[1]) - theta_o;
 	sum = wtv[0] + wtv[1];
 	wtv[0]/= sum;
 	wtv[1]/= sum;
 
-	wpi[1] = phi_i - (float_t)(DJB__UTIA_STEP_P * ipi[0]);
-	wpi[0] = (float_t)(DJB__UTIA_STEP_P * ipi[1]) - phi_i;
+	wpi[1] = phi_i - (float_t)(m_step_p * ipi[0]);
+	wpi[0] = (float_t)(m_step_p * ipi[1]) - phi_i;
 	sum = wpi[0] + wpi[1];
 	wpi[0]/= sum;
 	wpi[1]/= sum;
-	wpv[1] = phi_o - (float_t)(DJB__UTIA_STEP_P * ipv[0]);
-	wpv[0] = (float_t)(DJB__UTIA_STEP_P * ipv[1]) - phi_o;
+	wpv[1] = phi_o - (float_t)(m_step_p * ipv[0]);
+	wpv[0] = (float_t)(m_step_p * ipv[1]) - phi_o;
 	sum = wpv[0] + wpv[1];
 	wpv[0]/= sum;
 	wpv[1]/= sum;
 
-	if(ipi[1] == DJB__UTIA_NPI)
+	if(ipi[1] == m_npi)
 		ipi[1] = 0;
-	if(ipv[1] == DJB__UTIA_NPV)
+	if(ipv[1] == m_npv)
 		ipv[1] = 0;
 
-	int nc = DJB__UTIA_NPV * DJB__UTIA_NTV;
-	int nr = DJB__UTIA_NPI * DJB__UTIA_NTI;
-	float_t RGB[DJB__UTIA_PLANES];
-	for(int isp = 0; isp < DJB__UTIA_PLANES; ++isp) {
+	int nc = m_npv * m_ntv;
+	int nr = m_npi * m_nti;
+	float_t RGB[m_planes];
+
+	for(int isp = 0; isp < m_planes; ++isp) {
 		int i, j, k, l;
 
 		RGB[isp] = 0.0;
 		for(i = 0; i < 2; ++i)
-		for(j = 0; j < 2; ++j)
-		for(k = 0; k < 2; ++k)
-		for(l = 0; l < 2; ++l) {
-			float_t w = wti[i] * wtv[j] * wpi[k] * wpv[l];
-			int idx = isp * nr * nc + nc * (DJB__UTIA_NPI * iti[i] + ipi[k]) 
-			        + DJB__UTIA_NPV * itv[j] + ipv[l];
-
-			RGB[isp]+= w * (float_t)m_samples[idx];
-		}
-		if (RGB[isp] > 0.0375)
-			RGB[isp] = pow((float_t)(RGB[isp] + 0.055)/1.055, (float_t)2.4); 
-		else
-			RGB[isp]/= (float_t)12.92;
-		RGB[isp]*= (float_t)100.0; 
+			for(j = 0; j < 2; ++j)
+				for(k = 0; k < 2; ++k)
+					for(l = 0; l < 2; ++l) {
+						float_t w = wti[i] * wtv[j] * wpi[k] * wpv[l];
+						int idx = isp * nr * nc + nc * (m_npi * iti[i] + ipi[k]) 
+							+ m_npv * itv[j] + ipv[l];
+						
+						RGB[isp]+= w * (float_t)m_samples[idx];
+					}
 	}
+
 	return vec3(
 		max((float_t)0, RGB[0]),
 		max((float_t)0, RGB[1]),
 		max((float_t)0, RGB[2])
 	);
+}
+
+void utia::loadFile(const char *filename) {
+	switch(m_fileFormat) {
+	case FileFormat_BIN:
+		{
+			// open file
+			std::fstream f(filename, std::fstream::in | std::fstream::binary);
+			if (!f.is_open())
+				throw exc("djb_error: Failed to open %s\n", filename);
+			
+			int cnt = m_planes * m_nti * m_npi * m_ntv * m_npv;
+			f.read((char *)&m_samples[0], sizeof(double) * cnt);
+
+			if (f.fail())
+				throw exc("djb_error: Reading %s failed\n", filename);
+
+			break;
+		}
+	case FileFormat_EXR:
+		{
+#if DJB_USE_OPENEXR
+			Imf::Array2D<Imf::Rgba> pixels;
+		
+			Imf::RgbaInputFile file(filename);
+			Imath::Box2i dw = file.dataWindow();
+			int width = dw.max.x - dw.min.x + 1;
+			int height = dw.max.y - dw.min.y + 1;
+			pixels.resizeErase(height, width);
+			file.setFrameBuffer(&pixels[0][0] - dw.min.x - dw.min.y * width, 1, width);
+			file.readPixels(dw.min.y, dw.max.y);
+        
+			long count = 0;
+			for (int ni = 0; ni < m_nti * m_npi; ni++) {
+				for (int nv = 0; nv < m_ntv * m_npv; nv++) {
+					m_samples[count] = (double) (pixels[ni][nv].r);
+					m_samples[m_nti * m_npi * m_ntv * m_npv + count] = (double) (pixels[ni][nv].g);
+					m_samples[2 * m_nti * m_npi * m_ntv * m_npv + count] = (double) (pixels[ni][nv].b);
+					count++;
+				}
+			}    
+#else
+			DJB_LOG("djb_verbose: Can load OpenEXR file. Try compile dj_brdf with DJB_USE_OPENEXR 1\n");
+#endif
+			break;
+		}
+	case FileFormat_PNG:
+		{
+#if DJB_USE_LODEPNG
+			std::vector<unsigned char> image;
+			unsigned w = m_ntv * m_npv;
+			unsigned h = m_nti * m_npi;
+			unsigned error = lodepng::decode(image, w, h, filename);
+			
+			//if there's an error, display it
+			if (error)
+				throw exc("djb_error: Failed to open %s\n", filename);
+			
+			long count = 0;
+			for (int isp = 0; isp < m_planes; isp++) {
+				for (int ni = 0; ni < m_nti * m_npi; ni++) {
+					for (int nv = 0; nv < m_ntv * m_npv; nv++) {
+						m_samples[count++] = (double) image[4 * m_ntv * m_npv * ni + 4 * nv + isp] / 255.0;
+					}
+				}
+			}
+		
+#else
+			DJB_LOG("djb_verbose: Can load PNG file. Try compile dj_brdf with DJB_USE_LODEPNG 1\n");
+#endif
+			break;
+		}
+	}
+}
+
+void utia::correctColorSpace() {
+
+	int cnt = m_nti * m_npi * m_ntv * m_npv;
+
+	// Convert everything to linear RGB
+	switch(m_colorFormat) {
+	case ColorFormat_sRGB:
+		{
+			for (int i = 0; i < m_planes * cnt; i++) {
+				m_samples[i] = (double)colorspace::sRgb2Rgb((float_t)m_samples[i]);
+			}
+			break;
+		}
+	case ColorFormat_XYZ:
+		{
+			// Assume m_planes = 3... X Y Z
+			for (int i = 0; i < cnt; i++) {
+				float_t R, G, B;
+				colorspace::Xyz2Rgb(m_samples[i],
+									m_samples[cnt + i],
+									m_samples[2 * cnt + i],
+									&R, &G, &B);
+				
+				m_samples[i] = R;
+				m_samples[cnt + i] = G;
+				m_samples[2 * cnt + i] = B;
+			}
+			break;
+		}
+	}
 }
 
 //---------------------------------------------------------------------------
