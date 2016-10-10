@@ -6,6 +6,8 @@
 #include <mitsuba/render/texture.h>
 #include <mitsuba/hw/basicshader.h>
 #include <mitsuba/core/warp.h>
+#include <boost/algorithm/string.hpp>
+
 
 #define DJ_BRDF_IMPLEMENTATION 1
 #include "dj_brdf.h"
@@ -24,7 +26,42 @@ public:
 
 		fs::path m_filename = Thread::getThread()->getFileResolver()->resolve(props.getString("filename"));
 		printf("Loading %s\n", m_filename.string().c_str());
-		m_brdf = new djb::utia(m_filename.string().c_str());
+
+		// Retrieve the parameters if specified		
+		Float step_t = props.getFloat("step_t", DJB__UTIA_STEP_T),
+			step_p = props.getFloat("step_t", DJB__UTIA_STEP_T);
+		
+		int nti = props.getInteger("nti", DJB__UTIA_NTI),
+			ntv = props.getInteger("ntv", DJB__UTIA_NTV);
+
+		djb::utia::FileFormat fileFormat = djb::utia::FileFormat_BIN;
+		
+        std::string typeF =
+            boost::to_lower_copy(props.getString("file_format", "binary"));
+        if (typeF == "binary")
+            fileFormat = djb::utia::FileFormat_BIN;
+        else if (typeF == "exr")
+			fileFormat = djb::utia::FileFormat_EXR;
+        else if (typeF == "png")
+			fileFormat = djb::utia::FileFormat_PNG;
+        else
+            Log(EError, "Specified an invalid file format type \"%s\", must be "
+                "\"binary\", \"exr\", or \"png\"!", typeF.c_str());
+
+		djb::utia::ColorFormat colorFormat = djb::utia::ColorFormat_sRGB;
+        std::string typeC =
+            boost::to_lower_copy(props.getString("color_format", "srgb"));
+        if (typeC == "srgb")
+            colorFormat = djb::utia::ColorFormat_sRGB;
+        else if (typeC == "xyz")
+			colorFormat = djb::utia::ColorFormat_XYZ;
+        else
+            Log(EError, "Specified an invalid color format type \"%s\", must be "
+                "\"sRGB\", or \"XYZ\"!", typeC.c_str());
+
+
+		
+		m_brdf = new djb::utia(m_filename.string().c_str(), step_t, step_p, nti, ntv, fileFormat, colorFormat);
 	}
 
 	dj_utia(Stream *stream, InstanceManager *manager)
