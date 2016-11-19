@@ -2705,13 +2705,14 @@ void tabular::compute_qf()
 {
 	int cnt = (int)m_p22.size() - 1;
 	int res = cnt * 8; // resolution of inversion
+	int j = 0;
 
 	m_qf.resize(0);
 	m_qf.push_back(0);
 	for (int i = 1; i < cnt; ++i) {
 		float_t cdf = (float_t)i / (float_t)cnt;
 
-		for (int j = 0; j < res; ++j) {
+		for (; j < res; ++j) {
 			float_t u = (float_t)j / (float_t)res;
 			float_t theta_h = u * M_PI * 0.5;
 			float_t qf = cdf_radial(tan(theta_h));
@@ -2722,9 +2723,11 @@ void tabular::compute_qf()
 				break;
 			} else if (j == res) {
 				m_qf.push_back(1.0);
+				break;
 			}
 		}
 	}
+
 	m_qf.push_back(1.0);
 #ifndef NVERBOSE
 	DJB_LOG("djb_verbose: Slope QF ready\n");
@@ -2852,19 +2855,18 @@ void tabular_anisotropic::compute_cdf1()
 	float_t dphi = 2.0 * M_PI / (float_t)cnt;
 
 	m_cdf1.resize(0);
-	for (int i = 0; i < cnt; ++i) {
-		float_t nint = 0.0;
+	float_t nint = 0.0;
 
-		for (int j = 0; j < i; ++j) {
-			float_t u = (float_t)j / (float_t)cnt;
-			float_t phi = u * 2.0 * M_PI;
-			float_t pdf = pdf1(phi);
+	m_cdf1.push_back(0);
+	for (int i = 1; i < cnt; ++i) {
+		float_t u = (float_t)i / (float_t)cnt;
+		float_t phi = u * 2.0 * M_PI;
+		float_t pdf = pdf1(phi);
 
-			nint+= pdf;
-		}
-		nint*= dphi;
-		m_cdf1.push_back(nint);
+		nint+= pdf;
+		m_cdf1.push_back(nint * dphi);
 	}
+
 	m_cdf1.push_back(1.0);
 #ifndef NVERBOSE
 	DJB_LOG("djb_verbose: CDF_1 ready\n");
@@ -2877,13 +2879,14 @@ void tabular_anisotropic::compute_qf1()
 {
 	int cnt = (int)m_cdf1.size() - 1;
 	int res = cnt * 8; // resolution for inversion
+	int j = 0;
 
 	m_qf1.resize(0);
 	m_qf1.push_back(0);
 	for (int i = 1; i < cnt; ++i) {
 		float_t cdf = (float_t)i / (float_t)cnt;
 
-		for (int j = 0; j < res; ++j) {
+		for (; j < res; ++j) {
 			float_t u = (float_t)j / (float_t)res;
 			float_t phi = u * 2.0 * M_PI;
 			float_t qf = cdf1(phi);
@@ -2894,9 +2897,11 @@ void tabular_anisotropic::compute_qf1()
 				break;
 			} else if (j == res) {
 				m_qf1.push_back(1.0);
+				break;
 			}
 		}
 	}
+
 	m_qf1.push_back(1.0);
 #ifndef NVERBOSE
 	DJB_LOG("djb_verbose: QF_1 ready\n");
@@ -2930,6 +2935,7 @@ void tabular_anisotropic::compute_pdf2()
 		}
 		m_pdf2.push_back(0);
 	}
+
 	normalize_pdf2();
 #ifndef NVERBOSE
 	DJB_LOG("djb_verbose: PDF_2 ready\n");
@@ -2948,23 +2954,20 @@ void tabular_anisotropic::compute_cdf2()
 	for (int i = 0; i < nphi; ++i) {
 		float_t u = (float_t)i / (float_t)nphi; // in [0,1)
 		float_t phi = u * 2.0 * M_PI; // in [0,2pi)
+		float_t nint = 0.0;
 
 		for (int j = 0; j < ntheta; ++j) {
-			float_t nint = 0.0;
+			float_t u = (float_t)j / (float_t)ntheta; // in [0,1)
+			float_t theta = u * 0.5 * M_PI; // in [0,pi/2)
+			float_t pdf2 = this->pdf2(theta, phi);
+			float_t cos_theta = cos(theta);
 
-			for (int k = 0; k <= j; ++k) {
-				float_t u = (float_t)k / (float_t)ntheta; // in [0,1)
-				float_t theta = u * 0.5 * M_PI; // in [0,pi/2)
-				float_t pdf2 = this->pdf2(theta, phi);
-				float_t cos_theta = cos(theta);
-
-				nint+= (pdf2 * tan(theta)) / (cos_theta * cos_theta);
-			}
-			nint*= dtheta;
-			m_cdf2.push_back(nint);
+			nint+= (pdf2 * tan(theta)) / (cos_theta * cos_theta);
+			m_cdf2.push_back(nint * dtheta);
 		}
 		m_cdf2.push_back(1);
 	}
+
 #ifndef NVERBOSE
 	DJB_LOG("djb_verbose: CDF_2 ready\n");
 #endif
@@ -2982,14 +2985,15 @@ void tabular_anisotropic::compute_qf2()
 	for (int k = 0; k < nphi; ++k) {
 		float_t u = (float_t)k / (float_t)nphi;
 		float_t phi = u * 2.0 * M_PI;
+		int j = 0;
 
 		m_qf2.push_back(0);
 		for (int i = 1; i < ntheta; ++i) {
 			float_t cdf = (float_t)i / (float_t)ntheta;
 
-			for (int j = 0; j < res; ++j) {
+			for (; j < res; ++j) {
 				float_t u = (float_t)j / (float_t)res;
-				float_t theta = u * 0.5 * M_PI;
+				float_t theta = u * 0.5 * M_PI; // in [0, pi/2)
 				float_t qf = cdf2(theta, phi);
 
 				// lerp lookup
@@ -2998,11 +3002,13 @@ void tabular_anisotropic::compute_qf2()
 					break;
 				} else if (j == res) {
 					m_qf2.push_back(1.0);
+					break;
 				}
 			}
 		}
 		m_qf2.push_back(1.0);
 	}
+
 #ifndef NVERBOSE
 	DJB_LOG("djb_verbose: QF_2 ready\n");
 #endif
