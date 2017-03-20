@@ -204,7 +204,7 @@ namespace fresnel {
 		vec3 eval(float_t cos_theta_d) const;
 		impl *copy() const {return new spline(*this);}
 	};
-}; // namespace fresnel
+} // namespace fresnel
 
 /* Microfacet API */
 class microfacet : public brdf {
@@ -364,7 +364,7 @@ public:
 	float_t cdf_radial(float_t r) const;
 	float_t qf_radial(float_t u) const;
 	float_t qf1(float_t u) const;
-	float_t qf2_radial(float_t u, 
+	float_t qf2_radial(float_t u,
 	                   float_t cos_theta_k, float_t sin_theta_k) const;
 	float_t qf3_radial(float_t u, float_t qf2) const;
 	bool supports_smith_vndf_sampling() const {return true;}
@@ -382,7 +382,7 @@ public:
 	float_t cdf_radial(float_t r) const;
 	float_t qf_radial(float_t u) const;
 	float_t qf1(float_t u) const;
-	float_t qf2_radial(float_t u, 
+	float_t qf2_radial(float_t u,
 	                   float_t cos_theta_k, float_t sin_theta_k) const;
 	float_t qf3_radial(float_t u, float_t qf2) const;
 	bool supports_smith_vndf_sampling() const {return true;}
@@ -1306,7 +1306,7 @@ vec3 schlick::eval(float_t cos_theta_d) const
 	float_t c5 = c2 * c2 * c1;
 
 	return f0 + c5 * (vec3(1) - f0);
-};
+}
 
 vec3 sgd::eval(float_t cos_theta_d) const
 {
@@ -1314,7 +1314,7 @@ vec3 sgd::eval(float_t cos_theta_d) const
 	float_t c = cos_theta_d;
 
 	return f0 - c * f1 + pow(1.0 - c, 5.0) * (vec3(1) - f0);
-};
+}
 
 vec3 spline::eval(float_t cos_theta_d) const
 {
