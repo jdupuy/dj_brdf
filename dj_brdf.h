@@ -1178,56 +1178,75 @@ void utia::normalize()
 
 // *************************************************************************************************
 // Private Spline API
-template <typename T>
-static T spline_eval(const std::vector<T>& points, float_t x)
-{
-	x = min((float_t)1.0, max((float_t)0.0, x)) * (points.size() - 1); // clamp to edge
-	float_t s1 = floor(x);
-	float_t s2 = min(float_t(points.size() - 1), (float_t)ceil(x));
-	const T& t1 = points[(int)s1];
-	const T& t2 = points[(int)s2];
-	float_t a = x - s1;
+namespace spline {
 
-	return (1.0 - a) * t1 + a * t2;
+int uwrap_repeat(int i, int edge)
+{
+	while (i >= edge) i-= edge;
+	while (i < 0    ) i+= edge;
+
+	return i;
 }
 
-template <typename T> 
+int uwrap_edge(int i, int edge)
+{
+	if      (i >= edge) i = 0;
+	else if (i < 0    ) i = edge;
+
+	return i;
+}
+
+typedef int (*uwrap_callback)(int, int);
+
+template <typename T>
+T lerp(const T& x1, const T& x2, float_t u)
+{
+	return x1 + u * (x2 - x1);
+}
+
+template <typename T>
+static T eval(const std::vector<T>& points, uwrap_callback uwrap_cb, float_t u)
+{
+	int edge   = (int)points.size();
+	double intpart; float_t frac = modf(u * edge - u, &intpart);
+	int i1 = (*uwrap_cb)((int)intpart    , edge);
+	int i2 = (*uwrap_cb)((int)intpart + 1, edge);
+	const T& p1 = points[i1];
+	const T& p2 = points[i2];
+
+	return lerp(p1, p2, frac);
+}
+
+template <typename T>
 static T
-spline2d_eval(
-	const std::vector<T>& points,
+eval2d(
+	const std::vector<T>& points, 
 	int w,
 	int h,
-	float_t x,
-	float_t y
+	uwrap_callback uwrap_cb1, float_t u1,
+	uwrap_callback uwrap_cb2, float_t u2
 ) {
-	x = min((float_t)1.0, max((float_t)0.0, x)) * (w - 1); // clamp to edge
-	while (y < 0.0) y+= 1.0;
-	while (y >= 1.0) y-= 1.0;
-	y*= (h - 1);  // repeat
-
-	// texcoords
-	float_t x1 = floor(x);
-	float_t x2 = min(x1 + (float_t)1.0, (float_t)(w-1));
-	float_t y1 = floor(y);
-	float_t y2 = min(y1 + (float_t)1.0, (float_t)(h-1));
-
-	// lerp coeffs
-	float_t a1 = (float_t)x - x1;
-	float_t a2 = (float_t)y - y1;
-	DJB_ASSERT(a1 >= 0.0 && a1 <= 1.0);
-	DJB_ASSERT(a2 >= 0.0 && a2 <= 1.0);
+	// compute weights and indices
+	double intpart1; float_t frac1 = modf(u1 * w - u1, &intpart1);
+	int i1 = (*uwrap_cb1)((int)intpart1    , w);
+	int i2 = (*uwrap_cb1)((int)intpart1 + 1, w);
+	double intpart2; float_t frac2 = modf(u2 * h - u2, &intpart2);
+	int j1 = (*uwrap_cb2)((int)intpart2    , h);
+	int j2 = (*uwrap_cb2)((int)intpart2 + 1, h);
 
 	// fetches
-	const T& p1 = points[(int)x1 + w * (int)y1];
-	const T& p2 = points[(int)x2 + w * (int)y1];
-	const T& p3 = points[(int)x1 + w * (int)y2];
-	const T& p4 = points[(int)x2 + w * (int)y2];
+	const T& p1 = points[i1 + w * j1];
+	const T& p2 = points[i2 + w * j1];
+	const T& p3 = points[i1 + w * j2];
+	const T& p4 = points[i2 + w * j2];
 
 	// return bilinear interpolation
-	float_t tmp1 = (1.0 - a1) * p1 + a1 * p2;
-	float_t tmp2 = (1.0 - a1) * p3 + a1 * p4;
-	return ((1.0 - a2) * tmp1 + a2 * tmp2);
+	float_t tmp1 = lerp(p1, p2, frac1);
+	float_t tmp2 = lerp(p3, p4, frac1);;
+	return lerp(tmp1, tmp2, frac2);
 }
+
+} // namespace spline
 
 // *************************************************************************************************
 // Fresnel API implementation
@@ -1319,7 +1338,9 @@ vec3 sgd::eval(float_t cos_theta_d) const
 vec3 spline::eval(float_t cos_theta_d) const
 {
 	DJB_ASSERT(cos_theta_d >= 0.f && cos_theta_d <= 1.0 && "Invalid Angle");
-	return spline_eval(m_points, 2.0 * acos(cos_theta_d) / M_PI);
+	float_t u = 2.0 * acos(cos_theta_d) / M_PI;
+
+	return djb::spline::eval(m_points, djb::spline::uwrap_edge, u);
 }
 
 } // namespace fresnel
@@ -2131,26 +2152,26 @@ float_t tabular::p22_radial(float_t r_sqr) const
 {
 	float_t r = sqrt(r_sqr);
 	float_t u = sqrt((float_t)2.0 * atan(r) / (float_t)M_PI);
-	return spline_eval(m_p22, u);
+	return spline::eval(m_p22, spline::uwrap_edge, u);
 }
 
 float_t tabular::sigma_std_radial(float_t cos_theta_k) const
 {
 	float_t u = (float_t)2.0 * acos(cos_theta_k) / (float_t)M_PI;
-	return spline_eval(m_sigma, u);
+	return spline::eval(m_sigma, spline::uwrap_edge, u);
 }
 
 float_t tabular::cdf_radial(float_t r) const
 {
 	float_t u = atan(r) * (float_t)2.0 / (float_t)M_PI;
 	if (u < (float_t)0.0) u = (float_t)0.0;
-	return spline_eval(m_cdf, sqrt(u));
+	return spline::eval(m_cdf, spline::uwrap_edge, sqrt(u));
 }
 
 float_t tabular::qf_radial(float_t u) const
 {
 	DJB_ASSERT(u > (float_t)0.0 && u < (float_t)1.0);
-	float_t qf = spline_eval(m_qf, u);
+	float_t qf = spline::eval(m_qf, spline::uwrap_edge, u);
 	return tan(qf * (float_t)M_PI / (float_t)2.0);
 }
 
@@ -2164,12 +2185,14 @@ float_t tabular_anisotropic::p22_std(float_t x, float_t y) const
 float_t tabular_anisotropic::p22_std_theta_phi(float_t theta, float_t phi) const
 {
 	if (phi < 0.0) phi+= 2.0 * M_PI;
-	float_t x = theta * 2.0 / M_PI;
-	float_t y = phi * 0.5 / M_PI;
+	float_t u1 = theta * 2.0 / M_PI;
+	float_t u2 = phi * 0.5 / M_PI;
 	int w = m_elevation_res;
 	int h = m_azimuthal_res;
 
-	return spline2d_eval<float_t>(m_p22, w, h, x, y);
+	return spline::eval2d(m_p22, w, h, 
+	                      spline::uwrap_edge, u1,
+	                      spline::uwrap_repeat, u2);
 }
 
 float_t tabular_anisotropic::sigma_std(const vec3& k) const
@@ -2177,12 +2200,14 @@ float_t tabular_anisotropic::sigma_std(const vec3& k) const
 	float_t theta = acos(k.z);
 	float_t phi = atan2(k.y, k.x);
 	if (phi < 0.0) phi+= 2.0 * M_PI;
-	float_t x = theta * 2.0 / M_PI;
-	float_t y = phi * 0.5 / M_PI;
+	float_t u1 = theta * 2.0 / M_PI;
+	float_t u2 = phi * 0.5 / M_PI;
 	int w = m_elevation_res;
 	int h = m_azimuthal_res;
 
-	return spline2d_eval<float_t>(m_sigma, w, h, x, y);
+	return spline::eval2d(m_sigma, w, h, 
+	                      spline::uwrap_edge, u1,
+	                      spline::uwrap_repeat, u2);
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -2738,26 +2763,20 @@ void tabular::compute_qf()
 // Tabular Anisotropic Fetches
 float_t tabular_anisotropic::pdf1(float_t phi) const
 {
-	float_t z = phi * 0.5 / M_PI;
-	while (z < 0.0) z+= 1.0;
-	while (z > 1.0) z-= 1.0;
-
-	return spline_eval(m_pdf1, z);
+	float_t u = phi * 0.5 / M_PI;
+	return spline::eval(m_pdf1, spline::uwrap_repeat, u);
 }
 
 float_t tabular_anisotropic::cdf1(float_t phi) const
 {
-	float_t z = phi * 0.5 / M_PI;
-	while (z < 0.0) z+= 1.0;
-	while (z > 1.0) z-= 1.0;
-
-	return spline_eval(m_cdf1, z);
+	float_t u = phi * 0.5 / M_PI;
+	return spline::eval(m_cdf1, spline::uwrap_repeat, u);
 }
 
 float_t tabular_anisotropic::qf1(float_t u1) const
 {
 	DJB_ASSERT(u1 >= 0.0 && u1 <= 1.0 && "Invalid Variate");
-	return spline_eval(m_qf1, u1) * 2.0 * M_PI;
+	return spline::eval(m_qf1, spline::uwrap_edge, u1) * 2.0 * M_PI;
 }
 
 float_t tabular_anisotropic::pdf2(float_t theta, float_t phi) const
@@ -2766,10 +2785,12 @@ float_t tabular_anisotropic::pdf2(float_t theta, float_t phi) const
 	if (theta >= 0.5 * M_PI) return 0.0;
 	int w = m_elevation_res;
 	int h = m_azimuthal_res;
-	float_t x = theta * 2.0 / M_PI; // in [0, 1]
-	float_t y = phi * 0.5 / M_PI; // in [0, 1]
+	float_t u1 = theta * 2.0 / M_PI; // in [0, 1]
+	float_t u2 = phi * 0.5 / M_PI; // in [0, 1]
 
-	return spline2d_eval(m_pdf2, w, h, x, y);
+	return spline::eval2d(m_pdf2, w, h,
+	                      spline::uwrap_edge, u1,
+	                      spline::uwrap_repeat, u2);
 }
 
 float_t tabular_anisotropic::cdf2(float_t theta, float_t phi) const
@@ -2778,10 +2799,12 @@ float_t tabular_anisotropic::cdf2(float_t theta, float_t phi) const
 	if (theta >= 0.5 * M_PI) return 1.0;
 	int w = m_elevation_res;
 	int h = m_azimuthal_res;
-	float_t x = theta * 2.0 / M_PI; // in [0, 1]
-	float_t y = phi * 0.5 / M_PI; // in [0, 1]
+	float_t u1 = theta * 2.0 / M_PI; // in [0, 1]
+	float_t u2 = phi * 0.5 / M_PI; // in [0, 1]
 
-	return spline2d_eval(m_cdf2, w, h, x, y);
+	return spline::eval2d(m_cdf2, w, h,
+	                      spline::uwrap_edge, u1,
+	                      spline::uwrap_repeat, u2);
 }
 
 float_t tabular_anisotropic::qf2(float_t u, float_t phi) const
@@ -2791,7 +2814,9 @@ float_t tabular_anisotropic::qf2(float_t u, float_t phi) const
 	int h = m_azimuthal_res;
 	float_t u1 = phi / (2.0 * M_PI);
 
-	return spline2d_eval(m_qf2, w, h, u, u1) * 0.5 * M_PI;
+	return spline::eval2d(m_qf2, w, h,
+	                      spline::uwrap_edge, u,
+	                      spline::uwrap_repeat, u1) * 0.5 * M_PI;
 }
 
 // -------------------------------------------------------------------------------------------------
