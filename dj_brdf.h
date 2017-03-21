@@ -1190,8 +1190,8 @@ int uwrap_repeat(int i, int edge)
 
 int uwrap_edge(int i, int edge)
 {
-	if      (i >= edge) i = 0;
-	else if (i < 0    ) i = edge;
+	if      (i >= edge) i = edge - 1;
+	else if (i < 0    ) i = 0;
 
 	return i;
 }
