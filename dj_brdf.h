@@ -2378,7 +2378,7 @@ void tabular::compute_sigma()
 		nint*= dtheta * dphi;
 		m_sigma.push_back(max((float_t)cos_theta_k, nint));
 	}
-	m_sigma.push_back(0);
+	m_sigma.push_back(m_sigma.back());
 
 #ifndef NVERBOSE
 	DJB_LOG("djb_verbose: Projected area term ready\n");
@@ -2423,7 +2423,7 @@ void tabular_anisotropic::compute_sigma()
 			nint*= 2.0 * dtheta * dphi;
 			m_sigma.push_back(max((float_t)cos_theta_k, nint));
 		}
-		m_sigma.push_back(0);
+		m_sigma.push_back(m_sigma.back());
 	}
 
 #ifndef NVERBOSE
