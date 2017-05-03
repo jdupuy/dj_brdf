@@ -2606,6 +2606,7 @@ void tabular::compute_fresnel(const brdf& brdf, int res)
 			vec3 dir_i, dir_o;
 			hd_to_io(dir_h, dir_d, &dir_i, &dir_o);
 
+			dir_i = vec3(0, 0, 1); //XXX: hack to reproduce my EGSR fits
 			vec3 fr1 = brdf.eval(dir_i, dir_o);
 			vec3 fr2 = eval(dir_i, dir_o);
 
@@ -2665,6 +2666,7 @@ void tabular_anisotropic::compute_fresnel(const brdf& brdf, int res)
 			vec3 dir_i, dir_o;
 			hd_to_io(dir_h, dir_d, &dir_i, &dir_o);
 
+			dir_i = vec3(0, 0, 1); //XXX: hack to reproduce my EGSR fits
 			vec3 fr1 = brdf.eval(dir_i, dir_o);
 			vec3 fr2 = eval(dir_i, dir_o);
 
