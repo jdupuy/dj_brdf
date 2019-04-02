@@ -37,7 +37,7 @@ bool furnace(const djb::brdf& fr) {
 		for (int j1 = 0; j1 < ntheta; ++j1) {
 			float u = (float)j1 / (float)ntheta;
 			float theta = u * M_PI / 2.0;
-			for (int j2 = 0; j2 < ntheta; ++j2) {
+			for (int j2 = 0; j2 < nphi; ++j2) {
 				float u = (float)j2 / (float)nphi;
 				float phi = u * M_PI * 2.0;
 				djb::vec3 i = djb::vec3(theta, phi);
