@@ -29,7 +29,8 @@ public:
 		// load MERL
 		m_brdf = new djb::merl(m_filename.string().c_str());
 		// load tabulated
-		m_tabular = new djb::tabular(*m_brdf, 90, true);
+                m_params = djb::tabular::fit_ggx_parameters(djb::tabular(*m_brdf, 90, false));
+                m_ggx = new djb::ggx();
 	}
 
 	dj_merl(Stream *stream, InstanceManager *manager)
@@ -41,7 +42,7 @@ public:
 	~dj_merl()
 	{
 		delete m_brdf;
-		delete m_tabular;
+                delete m_ggx;
 	}
 
 	void configure() {
@@ -72,7 +73,7 @@ public:
 
 		djb::vec3 o(bRec.wi.x, bRec.wi.y, bRec.wi.z);
 		djb::vec3 i(bRec.wo.x, bRec.wo.y, bRec.wo.z);
-		return m_tabular->pdf(i, o);
+                return m_ggx->pdf(i, o, &m_params);
 	}
 
 
@@ -82,7 +83,7 @@ public:
 
 		/* Sample the tabulated microfacet BRDF */
 		djb::vec3 o = djb::vec3(bRec.wi.x, bRec.wi.y, bRec.wi.z);
-		djb::vec3 i = m_tabular->sample(sample.x, sample.y, o);
+                djb::vec3 i = m_ggx->sample(sample.x, sample.y, o, &m_params);
 
 		/* Setup Mitsuba variables */
 		bRec.wo = Vector(i.x, i.y, i.z);
@@ -133,7 +134,9 @@ public:
 private:
 	ref<const Texture> m_reflectance;
 	djb::brdf* m_brdf;
-	djb::tabular * m_tabular;
+        //djb::tabular * m_tabular;
+        djb::ggx *m_ggx;
+        djb::microfacet::params m_params;
 };
 
 // ================ Hardware shader implementation ================
