@@ -29,8 +29,8 @@ public:
 		// load MERL
 		m_brdf = new djb::merl(m_filename.string().c_str());
 		// load tabulated
-                m_params = djb::tabular::fit_ggx_parameters(djb::tabular(*m_brdf, 90, false));
-                m_ggx = new djb::ggx();
+		m_params = djb::tab_r::extract_ggx_args(djb::tab_r(*m_brdf, 90));
+		m_ggx = new djb::ggx();
 	}
 
 	dj_merl(Stream *stream, InstanceManager *manager)
@@ -42,12 +42,12 @@ public:
 	~dj_merl()
 	{
 		delete m_brdf;
-                delete m_ggx;
+		delete m_ggx;
 	}
 
 	void configure() {
 		/* Verify the input parameter and fix them if necessary */
-		m_components.clear();	
+		m_components.clear();
 		m_components.push_back(EDiffuseReflection | EFrontSide | 0);
 		m_usesRayDifferentials = false;
 		BSDF::configure();
@@ -61,8 +61,8 @@ public:
 
 		djb::vec3 o(bRec.wi.x, bRec.wi.y, bRec.wi.z);
 		djb::vec3 i(bRec.wo.x, bRec.wo.y, bRec.wo.z);
-		djb::vec3 fr_p = m_brdf->evalp(i, o);
-		return Color3(fr_p.x, fr_p.y, fr_p.z);
+		djb::brdf::value_type fr_p = m_brdf->eval(i, o);
+		return Color3(fr_p[0], fr_p[1], fr_p[2]);
 	}
 
 	Float pdf(const BSDFSamplingRecord &bRec, EMeasure measure) const {
@@ -73,9 +73,8 @@ public:
 
 		djb::vec3 o(bRec.wi.x, bRec.wi.y, bRec.wi.z);
 		djb::vec3 i(bRec.wo.x, bRec.wo.y, bRec.wo.z);
-                return m_ggx->pdf(i, o, &m_params);
+		return m_ggx->pdf(i, o, &m_params);
 	}
-
 
 	Spectrum sample(BSDFSamplingRecord &bRec, const Point2 &sample) const {
 		if (!(bRec.typeMask & EDiffuseReflection) || Frame::cosTheta(bRec.wi) <= 0)
@@ -83,7 +82,10 @@ public:
 
 		/* Sample the tabulated microfacet BRDF */
 		djb::vec3 o = djb::vec3(bRec.wi.x, bRec.wi.y, bRec.wi.z);
-                djb::vec3 i = m_ggx->sample(sample.x, sample.y, o, &m_params);
+		djb::vec3 i;
+		Float pdf;
+
+		m_ggx->sample(djb::vec2(sample.x, sample.y), o, &i, &pdf, &m_params);
 
 		/* Setup Mitsuba variables */
 		bRec.wo = Vector(i.x, i.y, i.z);
@@ -95,9 +97,8 @@ public:
 		if (Frame::cosTheta(bRec.wo) <= 0)
 			return Spectrum(0.0f);
 
-		djb::vec3 fr_p = m_brdf->evalp(i, o) / pdf(bRec, ESolidAngle);
-		return Color3(fr_p.x, fr_p.y, fr_p.z);
-
+		djb::brdf::value_type fr_p = m_brdf->eval(i, o) / pdf;
+		return Color3(fr_p[0], fr_p[1], fr_p[2]);
 	}
 
 	Spectrum sample(BSDFSamplingRecord &bRec, Float &pdf_, const Point2 &sample_) const {
@@ -134,9 +135,9 @@ public:
 private:
 	ref<const Texture> m_reflectance;
 	djb::brdf* m_brdf;
-        //djb::tabular * m_tabular;
-        djb::ggx *m_ggx;
-        djb::microfacet::params m_params;
+	//djb::tabular * m_tabular;
+	djb::ggx *m_ggx;
+	djb::microfacet::args m_params;
 };
 
 // ================ Hardware shader implementation ================
