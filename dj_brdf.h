@@ -2468,8 +2468,8 @@ std::vector<double> matrix::eigenvector(int iterations) const
 {
 	int j = 0;
 	std::vector<double> vec[2];
-	vec[0].reserve(size);
-	vec[1].reserve(size);
+	vec[0].resize(size);
+	vec[1].resize(size);
 	for (int i = 0; i < size; ++i)
 		vec[j][i] = 1.0;
 	for (int i = 0; i < iterations; ++i) {
