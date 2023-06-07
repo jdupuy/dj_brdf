@@ -59,8 +59,9 @@ public:
 			|| Frame::cosTheta(bRec.wo) <= 0)
 			return Spectrum(0.0f);
 
-		djb::vec3 o(bRec.wi.x, bRec.wi.y, bRec.wi.z);
-		djb::vec3 i(bRec.wo.x, bRec.wo.y, bRec.wo.z);
+		djb::vec3 o(bRec.wo.x, bRec.wo.y, bRec.wo.z);
+		djb::vec3 i(bRec.wi.x, bRec.wi.y, bRec.wi.z);
+
 		djb::brdf::value_type fr_p = m_brdf->eval(i, o);
 		return Color3(fr_p[0], fr_p[1], fr_p[2]);
 	}
@@ -71,8 +72,9 @@ public:
 			|| Frame::cosTheta(bRec.wo) <= 0)
 			return 0.0f;
 
-		djb::vec3 o(bRec.wi.x, bRec.wi.y, bRec.wi.z);
-		djb::vec3 i(bRec.wo.x, bRec.wo.y, bRec.wo.z);
+		djb::vec3 o(bRec.wo.x, bRec.wo.y, bRec.wo.z);
+		djb::vec3 i(bRec.wi.x, bRec.wi.y, bRec.wi.z);
+
 		return m_ggx->pdf(i, o, &m_params);
 	}
 
@@ -81,14 +83,14 @@ public:
 			return Spectrum(0.0f);
 
 		/* Sample the tabulated microfacet BRDF */
-		djb::vec3 o = djb::vec3(bRec.wi.x, bRec.wi.y, bRec.wi.z);
-		djb::vec3 i;
+		djb::vec3 i = djb::vec3(bRec.wi.x, bRec.wi.y, bRec.wi.z);
+		djb::vec3 o;
 		Float pdf;
 
-		m_ggx->sample(djb::vec2(sample.x, sample.y), o, &i, &pdf, &m_params);
+		m_ggx->sample(djb::vec2(sample.x, sample.y), i, &o, &pdf, &m_params);
 
 		/* Setup Mitsuba variables */
-		bRec.wo = Vector(i.x, i.y, i.z);
+		bRec.wo = Vector(o.x, o.y, o.z);
 		bRec.eta = 1.0f;
 		bRec.sampledComponent = 0;
 		bRec.sampledType = EGlossyReflection;
